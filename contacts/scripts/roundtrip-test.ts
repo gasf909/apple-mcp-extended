@@ -169,6 +169,63 @@ async function main() {
     console.log(`  (skipped strict pagination assertions; total=${page.total} < 3)`);
   }
 
+  // ----- 0.2.1 regression: address subfield must not leak "missing value" -----
+  console.log("\n[P1] address subfield missing-value regression");
+  const addrOnly = await contacts.createContact(`${TAG}Addr`, `${TAG}Only`, {
+    addresses: [{ label: "work", street: "21990 인천광역시 연수구 첨단대로60번길 45" }],
+  });
+  const gotAddr = await contacts.getContact({ id: addrOnly.id });
+  const a0 = gotAddr.addresses[0];
+  assert(!!a0, "address returned");
+  assert(a0?.street?.includes("인천") === true, "street preserved");
+  assert((a0 as any)?.city !== "missing value", `city no leak (got ${JSON.stringify(a0?.city)})`);
+  assert((a0 as any)?.state !== "missing value", `state no leak`);
+  assert((a0 as any)?.postal_code !== "missing value", `postal_code no leak`);
+  assert((a0 as any)?.country !== "missing value", `country no leak`);
+  assert(typeof a0?.formatted === "string" && a0.formatted.includes("인천"), `formatted synthesized (${a0?.formatted})`);
+  await contacts.deleteContact({ id: addrOnly.id });
+
+  // ----- 0.2.1 regression: single-name contact (P2) -----
+  console.log("\n[P2] single-name contact allowed");
+  const elvis = await contacts.createContact(`${TAG}Elvis`, undefined, {
+    organization: "The King LLC",
+  });
+  assert(!!elvis.id, "single-first-name create ok");
+  const gotElvis = await contacts.getContact({ id: elvis.id });
+  assert(gotElvis.first_name === `${TAG}Elvis`, `first_name=${gotElvis.first_name}`);
+  assert(gotElvis.last_name === null, `last_name=${gotElvis.last_name}`);
+  await contacts.deleteContact({ id: elvis.id });
+
+  // organization-only contact
+  const orgOnly = await contacts.createContact(undefined, undefined, {
+    organization: `${TAG}OrgCo`,
+  });
+  assert(!!orgOnly.id, "organization-only create ok");
+  await contacts.deleteContact({ id: orgOnly.id });
+
+  // ----- 0.2.1: list_contacts summary mode (P5) -----
+  console.log("\n[P5] list_contacts summary mode");
+  const sum = await contacts.listContacts(undefined, { limit: 3, offset: 0, summary: true });
+  assert(sum.items.length <= 3, `summary items.length=${sum.items.length}`);
+  if (sum.items.length > 0) {
+    const it = sum.items[0]!;
+    assert(typeof it.id === "string" && typeof it.name === "string", "summary has id+name");
+    assert(it.organization === null && it.primary_phone === null && it.primary_email === null, "summary omits org/phone/email");
+  }
+
+  // ----- 0.2.1: updated_fields echo (P6) -----
+  console.log("\n[P6] updated_fields echo on update_contact");
+  const echoC = await contacts.createContact(`${TAG}Echo`, `${TAG}X`, { organization: "Orig" });
+  const upd = await contacts.updateContact(
+    { id: echoC.id },
+    { job_title: "Manager", organization: "New" }
+  );
+  assert(Array.isArray(upd.updated_fields), "updated_fields present");
+  assert(upd.updated_fields.includes("job_title"), `updated_fields has job_title (${upd.updated_fields.join(",")})`);
+  assert(upd.updated_fields.includes("organization"), "updated_fields has organization");
+  assert(!upd.updated_fields.includes("note"), "updated_fields excludes untouched");
+  await contacts.deleteContact({ id: echoC.id });
+
   // ----- DELETE main contact -----
   console.log("\n[9] delete_contact by id");
   const delMsg = await contacts.deleteContact({ id: created.id });

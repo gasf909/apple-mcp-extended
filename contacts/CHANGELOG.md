@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.2.1
+
+Follow-up fixes from a second BNM sync-workflow session on top of 0.2.0.
+
+### Fixed
+
+- **P1 (critical regression from 0.2.0)** — address subfields
+  (`city`, `state`, `postal_code`, `country`) were still leaking the
+  literal string `"missing value"`. 0.2.0 fixed the top-level optional
+  fields but missed the address reader loop. Now guarded both in
+  AppleScript (`is not missing value`) and in the JS parser via a
+  shared `cleanField()` helper that also protects phones/emails/urls.
+- **P2** — `create_contact` no longer requires both `first_name` and
+  `last_name`. At least one of `first_name`, `last_name`, or
+  `organization` must be provided. Single-name contacts (e.g. "Elvis")
+  and organization-only entries are now allowed.
+
+### Added
+
+- **P3** — `get_contact` response now includes a synthesized `formatted`
+  string on each address (joined `street, city, state, postal, country`).
+  Makes round-trip easier for callers that wrote via `formatted`.
+- **P5** — `list_contacts` gains a `summary: true` option that returns
+  only `id` + `name` per item (~30B each, ~3× smaller payload). Useful
+  for enumerating groups with hundreds of entries. Default `limit` also
+  lowered from 100 → 50 to stay safely below MCP tool-output caps.
+- **P6** — `update_contact` response now echoes `updated_fields: string[]`
+  listing the keys the caller asked to change. Saves a follow-up
+  `get_contact` when the caller just needs to confirm what landed.
+
+### Skipped (intentionally)
+
+- **P4** (partial-name fallback on `get_contact`) — id-based lookup is
+  the recommended path and is already safe; adding another fallback
+  adds ambiguity without clear benefit.
+
 ## 0.2.0
 
 Bug fixes from real-world usage in the business-network-management Apple

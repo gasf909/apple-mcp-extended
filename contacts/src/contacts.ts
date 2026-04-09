@@ -83,35 +83,33 @@ end tell`;
 // ---------- Listing / search ----------
 
 // Default page size when caller does not specify a limit. Tuned to stay
-// well under typical MCP/LLM token budgets (~100 lightweight summaries).
-const DEFAULT_LIST_LIMIT = 100;
+// well under typical MCP/LLM token budgets. 50 summaries ≈ 5KB which is
+// safely below even conservative tool-output limits.
+const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 500;
 
 export async function listContacts(
   group: string | undefined,
-  opts: { limit?: number; offset?: number } = {}
+  opts: { limit?: number; offset?: number; summary?: boolean } = {}
 ): Promise<ListContactsResult> {
   assertGroupProvided(group);
   const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT));
   const offset = Math.max(0, opts.offset ?? 0);
+  const summary = !!opts.summary;
 
   // We page in AppleScript so the script never returns more than `limit`
   // contacts. The total count is included as a header so callers can
   // paginate without an extra round-trip.
+  //
+  // summary=true: emit only name + id per record (≈30B each) so very large
+  // groups can be cheaply enumerated.
   const scope = group ? `people of group ${q(group)}` : "people";
-  const script = `
-tell application "Contacts"
-  set theGroup to ${scope}
-  set total to count of theGroup
-  set startIdx to ${offset + 1}
-  set endIdx to ${offset + limit}
-  if endIdx > total then set endIdx to total
-  set out to "TOTAL=" & (total as string)
-  if startIdx > total then return out
-  repeat with i from startIdx to endIdx
-    set p to item i of theGroup
-    set theName to name of p
-    set theId to id of p
+  const perRecordScript = summary
+    ? `set rec to theName & "${F}" & theId`
+    : `set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail`;
+  const perRecordReaders = summary
+    ? ""
+    : `
     set theOrg to ""
     try
       set tmp to organization of p
@@ -130,8 +128,21 @@ tell application "Contacts"
         set tmp to value of (item 1 of emails of p)
         if tmp is not missing value then set theEmail to tmp as text
       end if
-    end try
-    set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail
+    end try`;
+  const script = `
+tell application "Contacts"
+  set theGroup to ${scope}
+  set total to count of theGroup
+  set startIdx to ${offset + 1}
+  set endIdx to ${offset + limit}
+  if endIdx > total then set endIdx to total
+  set out to "TOTAL=" & (total as string)
+  if startIdx > total then return out
+  repeat with i from startIdx to endIdx
+    set p to item i of theGroup
+    set theName to name of p
+    set theId to id of p${perRecordReaders}
+    ${perRecordScript}
     set out to out & "${R}" & rec
   end repeat
   return out
@@ -157,9 +168,9 @@ end tell`;
       return {
         name: (parts[0] ?? "").trim(),
         id: (parts[1] ?? "").trim(),
-        organization: (parts[2] ?? "").trim() || null,
-        primary_phone: (parts[3] ?? "").trim() || null,
-        primary_email: (parts[4] ?? "").trim() || null,
+        organization: summary ? null : cleanField(parts[2]) || null,
+        primary_phone: summary ? null : cleanField(parts[3]) || null,
+        primary_email: summary ? null : cleanField(parts[4]) || null,
       };
     });
 
@@ -475,23 +486,28 @@ tell application "Contacts"
       end try
       set streetVal to ""
       try
-        set streetVal to street of x
+        set tmp to street of x
+        if tmp is not missing value then set streetVal to tmp as text
       end try
       set cityVal to ""
       try
-        set cityVal to city of x
+        set tmp to city of x
+        if tmp is not missing value then set cityVal to tmp as text
       end try
       set stateVal to ""
       try
-        set stateVal to state of x
+        set tmp to state of x
+        if tmp is not missing value then set stateVal to tmp as text
       end try
       set zipVal to ""
       try
-        set zipVal to zip of x
+        set tmp to zip of x
+        if tmp is not missing value then set zipVal to tmp as text
       end try
       set countryVal to ""
       try
-        set countryVal to country of x
+        set tmp to country of x
+        if tmp is not missing value then set countryVal to tmp as text
       end try
       set sub to lbl & "${KV}" & streetVal & "${KV}" & cityVal & "${KV}" & stateVal & "${KV}" & zipVal & "${KV}" & countryVal
       if adStr is "" then
@@ -579,11 +595,19 @@ function parseContactRecord(raw: string): ContactRecord {
   };
 }
 
+// Defensive: strip the literal "missing value" string in case a reader
+// path somewhere forgets the AppleScript-level guard. Also strip empty.
+function cleanField(raw: string | undefined): string {
+  const t = (raw ?? "").trim();
+  if (!t || t === "missing value") return "";
+  return t;
+}
+
 function parseLabelValueList(s: string): { label: string; value: string }[] {
   if (!s) return [];
   return s.split(S).map((sub) => {
     const [label, value] = sub.split(KV);
-    return { label: cleanLabel(label ?? ""), value: (value ?? "").trim() };
+    return { label: cleanLabel(label ?? ""), value: cleanField(value) };
   }).filter((x) => x.value);
 }
 
@@ -592,16 +616,21 @@ function parseAddressList(s: string): Address[] {
   return s.split(S).map((sub) => {
     const parts = sub.split(KV);
     const addr: Address = { label: (cleanLabel(parts[0] ?? "") || "home") as Address["label"] };
-    const street = (parts[1] ?? "").trim();
-    const city = (parts[2] ?? "").trim();
-    const state = (parts[3] ?? "").trim();
-    const postal = (parts[4] ?? "").trim();
-    const country = (parts[5] ?? "").trim();
+    const street = cleanField(parts[1]);
+    const city = cleanField(parts[2]);
+    const state = cleanField(parts[3]);
+    const postal = cleanField(parts[4]);
+    const country = cleanField(parts[5]);
     if (street) addr.street = street;
     if (city) addr.city = city;
     if (state) addr.state = state;
     if (postal) addr.postal_code = postal;
     if (country) addr.country = country;
+    // Synthesize a read-only `formatted` from whatever is present, so
+    // callers that wrote via `formatted` on create can still see the
+    // resulting string on read.
+    const joined = [street, city, state, postal, country].filter(Boolean).join(", ");
+    if (joined) addr.formatted = joined;
     return addr;
   }).filter((a) => a.street || a.city || a.state || a.postal_code || a.country);
 }
@@ -633,8 +662,8 @@ function parseBirthday(s: string): string | null {
 // ---------- create_contact ----------
 
 export async function createContact(
-  firstName: string,
-  lastName: string,
+  firstName: string | undefined,
+  lastName: string | undefined,
   fields: ContactFields
 ): Promise<{ id: string; name: string; group_added?: string; group_warning?: string }> {
   // Pre-flight: when ALLOWED_GROUPS is set, the new contact will be
@@ -652,10 +681,12 @@ export async function createContact(
     }
   }
 
-  // Build property list for `make new person`
+  // Build property list for `make new person`. Both first/last are now
+  // optional: a contact with only organization (company entry) or only
+  // a single given name is allowed.
   const props: string[] = [];
-  props.push(`first name:${q(firstName)}`);
-  props.push(`last name:${q(lastName)}`);
+  if (firstName) props.push(`first name:${q(firstName)}`);
+  if (lastName) props.push(`last name:${q(lastName)}`);
   if (fields.prefix) props.push(`title:${q(fields.prefix)}`);
   if (fields.suffix) props.push(`suffix:${q(fields.suffix)}`);
   if (fields.nickname) props.push(`nickname:${q(fields.nickname)}`);
@@ -734,8 +765,15 @@ end tell`;
 export async function updateContact(
   idArg: Identifier,
   fields: ContactFields
-): Promise<{ id: string; name: string }> {
+): Promise<{ id: string; name: string; updated_fields: string[] }> {
   const personId = await resolvePersonId(idArg);
+
+  // Track which fields the caller asked to update so the response can
+  // echo them back — saves callers an extra get_contact roundtrip.
+  const updated: string[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) updated.push(k);
+  }
 
   const sets: string[] = [];
   const setIfStr = (apProp: string, val?: string) => {
@@ -781,7 +819,7 @@ end tell`;
     photoSetup.cleanup();
   }
   const [id, name] = result.split(F);
-  return { id: (id ?? "").trim(), name: (name ?? "").trim() };
+  return { id: (id ?? "").trim(), name: (name ?? "").trim(), updated_fields: updated };
 }
 
 // ---------- delete_contact ----------
