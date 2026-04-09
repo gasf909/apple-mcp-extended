@@ -1,7 +1,7 @@
 {
-  "name": "apple-mcp-extended",
+  "name": "@gasf030304/apple-contacts-extended",
   "version": "0.1.0",
-  "description": "Extended MCP server for Apple Contacts (fork of @griches/apple-contacts-mcp) with full field support and group safety",
+  "description": "Extended MCP server for Apple Contacts on macOS (fork of @griches/apple-contacts-mcp) with full field support, id-based safe matching, and ALLOWED_GROUPS safety",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -10,6 +10,7 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "dist/**/*.js.map",
     "README.md",
     "LICENSE"
   ],
@@ -17,8 +18,27 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test:roundtrip": "tsx scripts/roundtrip-test.ts"
+    "test:roundtrip": "tsx scripts/roundtrip-test.ts",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "apple",
+    "contacts",
+    "macos",
+    "applescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gasf909/apple-mcp-extended.git",
+    "directory": "contacts"
+  },
+  "homepage": "https://github.com/gasf909/apple-mcp-extended/tree/main/contacts",
+  "bugs": {
+    "url": "https://github.com/gasf909/apple-mcp-extended/issues"
+  },
+  "os": ["darwin"],
   "engines": {
     "node": ">=18.0.0"
   },

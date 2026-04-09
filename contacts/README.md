@@ -24,7 +24,7 @@ Extended MCP server for Apple Contacts on macOS. **Fork of [griches/apple-mcp](h
 ## Install
 
 ```bash
-git clone https://github.com/sanggeol/apple-mcp-extended.git
+git clone https://github.com/gasf909/apple-mcp-extended.git
 cd apple-mcp-extended/contacts
 npm install
 npm run build
