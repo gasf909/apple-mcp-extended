@@ -19,6 +19,7 @@ import {
   ContactFields,
   ContactRecord,
   ContactSummary,
+  ListContactsResult,
   Phone,
   Email,
   Url,
@@ -81,48 +82,89 @@ end tell`;
 
 // ---------- Listing / search ----------
 
-export async function listContacts(group: string | undefined): Promise<ContactSummary[]> {
+// Default page size when caller does not specify a limit. Tuned to stay
+// well under typical MCP/LLM token budgets (~100 lightweight summaries).
+const DEFAULT_LIST_LIMIT = 100;
+const MAX_LIST_LIMIT = 500;
+
+export async function listContacts(
+  group: string | undefined,
+  opts: { limit?: number; offset?: number } = {}
+): Promise<ListContactsResult> {
   assertGroupProvided(group);
+  const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  // We page in AppleScript so the script never returns more than `limit`
+  // contacts. The total count is included as a header so callers can
+  // paginate without an extra round-trip.
   const scope = group ? `people of group ${q(group)}` : "people";
   const script = `
 tell application "Contacts"
-  set out to ""
-  repeat with p in ${scope}
+  set theGroup to ${scope}
+  set total to count of theGroup
+  set startIdx to ${offset + 1}
+  set endIdx to ${offset + limit}
+  if endIdx > total then set endIdx to total
+  set out to "TOTAL=" & (total as string)
+  if startIdx > total then return out
+  repeat with i from startIdx to endIdx
+    set p to item i of theGroup
     set theName to name of p
     set theId to id of p
     set theOrg to ""
     try
-      set theOrg to organization of p
+      set tmp to organization of p
+      if tmp is not missing value then set theOrg to tmp as text
     end try
     set thePhone to ""
     try
-      if (count of phones of p) > 0 then set thePhone to value of (item 1 of phones of p)
+      if (count of phones of p) > 0 then
+        set tmp to value of (item 1 of phones of p)
+        if tmp is not missing value then set thePhone to tmp as text
+      end if
     end try
     set theEmail to ""
     try
-      if (count of emails of p) > 0 then set theEmail to value of (item 1 of emails of p)
+      if (count of emails of p) > 0 then
+        set tmp to value of (item 1 of emails of p)
+        if tmp is not missing value then set theEmail to tmp as text
+      end if
     end try
     set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail
-    if out is "" then
-      set out to rec
-    else
-      set out to out & "${R}" & rec
-    end if
+    set out to out & "${R}" & rec
   end repeat
   return out
 end tell`;
   const raw = await runAppleScript(script);
-  if (!raw) return [];
-  return raw.split(R).map((rec) => {
-    const parts = rec.split(F);
-    return {
-      name: (parts[0] ?? "").trim(),
-      id: (parts[1] ?? "").trim(),
-      organization: (parts[2] ?? "").trim() || null,
-      primary_phone: (parts[3] ?? "").trim() || null,
-      primary_email: (parts[4] ?? "").trim() || null,
-    };
-  });
+  // Header line: "TOTAL=N" then records joined by R.
+  const [headerAndFirst, ...rest] = raw.split(R);
+  const headerMatch = (headerAndFirst ?? "").match(/^TOTAL=(\d+)$/);
+  let total = 0;
+  let recordSlice: string[] = [];
+  if (headerMatch) {
+    total = parseInt(headerMatch[1]!, 10);
+    recordSlice = rest;
+  } else {
+    // Defensive: header missing → treat the whole payload as records.
+    recordSlice = headerAndFirst ? [headerAndFirst, ...rest] : [];
+  }
+
+  const items: ContactSummary[] = recordSlice
+    .filter((r) => r.length > 0)
+    .map((rec) => {
+      const parts = rec.split(F);
+      return {
+        name: (parts[0] ?? "").trim(),
+        id: (parts[1] ?? "").trim(),
+        organization: (parts[2] ?? "").trim() || null,
+        primary_phone: (parts[3] ?? "").trim() || null,
+        primary_email: (parts[4] ?? "").trim() || null,
+      };
+    });
+
+  const next_offset = offset + items.length < total ? offset + items.length : null;
+  return { items, total, offset, limit, next_offset };
 }
 
 export async function searchContacts(query: string, group?: string): Promise<ContactSummary[]> {
@@ -135,13 +177,22 @@ export async function searchContacts(query: string, group?: string): Promise<Con
     const seen = new Set<string>();
     const ql = query.toLowerCase();
     for (const g of groups) {
-      const items = await listContacts(g);
-      for (const it of items) {
-        if (seen.has(it.id)) continue;
-        if (it.name.toLowerCase().includes(ql)) {
-          out.push(it);
-          seen.add(it.id);
+      // Page through the entire group so search is exhaustive even when
+      // the group exceeds the default page size.
+      let off = 0;
+      // Use the max so search avoids unnecessary round-trips.
+      const pageSize = MAX_LIST_LIMIT;
+      while (true) {
+        const page = await listContacts(g, { limit: pageSize, offset: off });
+        for (const it of page.items) {
+          if (seen.has(it.id)) continue;
+          if (it.name.toLowerCase().includes(ql)) {
+            out.push(it);
+            seen.add(it.id);
+          }
         }
+        if (page.next_offset == null) break;
+        off = page.next_offset;
       }
     }
     return out;
@@ -210,11 +261,34 @@ end tell`;
     );
   }
 
-  // Find by name, then optionally filter by phone/email in JS.
-  const script = `
+  // Try multiple matching strategies in order. Stop at the first one that
+  // returns at least one candidate. Without this, callers had to know the
+  // exact display name (incl. prefix/suffix) — Apple Contacts' `whose
+  // name is "X"` is strict equality on the rendered name.
+  //
+  //   1. Exact display-name match           (`name is "X"`)
+  //   2. first+last components when input has exactly two tokens
+  //      (`first name is "A" and last name is "B"`)
+  //   3. Substring match on display name    (`name contains "X"`)
+  //
+  // Strategy 3 may legitimately return multiple matches; the existing
+  // ambiguity check below will then ask the caller to disambiguate.
+  const nameQ = idArg.name.trim();
+  const tokens = nameQ.split(/\s+/);
+  const queries: string[] = [`every person whose name is ${q(nameQ)}`];
+  if (tokens.length === 2) {
+    queries.push(
+      `every person whose first name is ${q(tokens[0]!)} and last name is ${q(tokens[1]!)}`
+    );
+  }
+  queries.push(`every person whose name contains ${q(nameQ)}`);
+
+  let raw = "";
+  for (const matchExpr of queries) {
+    const script = `
 tell application "Contacts"
   set out to ""
-  set matched to (every person whose name is ${q(idArg.name)})
+  set matched to (${matchExpr})
   repeat with p in matched
     set ph to ""
     set em to ""
@@ -245,7 +319,9 @@ tell application "Contacts"
   end repeat
   return out
 end tell`;
-  const raw = await runAppleScript(script);
+    raw = await runAppleScript(script);
+    if (raw) break;
+  }
   if (!raw) throw new Error(`No contact named "${idArg.name}"`);
   const records = raw.split(R).map((r) => {
     const [pid, ph, em] = r.split(F);
@@ -307,41 +383,53 @@ end tell`;
 export async function getContact(idArg: Identifier): Promise<ContactRecord> {
   const personId = await resolvePersonId(idArg);
 
+  // Each property reader follows the same pattern: try the property, and
+  // ONLY copy it into the output variable when it is not `missing value`.
+  // Without the `is not missing value` check, AppleScript coerces missing
+  // value into the literal string "missing value" when later concatenated.
   const script = `
 tell application "Contacts"
   set p to person id ${q(personId)}
   set theName to name of p
   set thePrefix to ""
   try
-    set thePrefix to title of p
+    set tmp to title of p
+    if tmp is not missing value then set thePrefix to tmp as text
   end try
   set theFirst to ""
   try
-    set theFirst to first name of p
+    set tmp to first name of p
+    if tmp is not missing value then set theFirst to tmp as text
   end try
   set theLast to ""
   try
-    set theLast to last name of p
+    set tmp to last name of p
+    if tmp is not missing value then set theLast to tmp as text
   end try
   set theSuffix to ""
   try
-    set theSuffix to suffix of p
+    set tmp to suffix of p
+    if tmp is not missing value then set theSuffix to tmp as text
   end try
   set theNick to ""
   try
-    set theNick to nickname of p
+    set tmp to nickname of p
+    if tmp is not missing value then set theNick to tmp as text
   end try
   set theOrg to ""
   try
-    set theOrg to organization of p
+    set tmp to organization of p
+    if tmp is not missing value then set theOrg to tmp as text
   end try
   set theDept to ""
   try
-    set theDept to department of p
+    set tmp to department of p
+    if tmp is not missing value then set theDept to tmp as text
   end try
   set theTitle to ""
   try
-    set theTitle to job title of p
+    set tmp to job title of p
+    if tmp is not missing value then set theTitle to tmp as text
   end try
 
   set phStr to ""
@@ -442,13 +530,16 @@ tell application "Contacts"
 
   set ntStr to ""
   try
-    set ntStr to note of p
+    set tmp to note of p
+    if tmp is not missing value then set ntStr to tmp as text
   end try
 
+  -- has_photo: image of p returns missing value (no exception) when no
+  -- photo is set; without the explicit guard hasImg was always "1".
   set hasImg to "0"
   try
     set img to image of p
-    set hasImg to "1"
+    if img is not missing value then set hasImg to "1"
   end try
 
   return theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg
@@ -460,9 +551,12 @@ end tell`;
 function parseContactRecord(raw: string): ContactRecord {
   const p = raw.split(F);
   const get = (i: number) => (p[i] ?? "").trim();
+  // Defensive null: also strip the literal "missing value" string in case
+  // a future AppleScript reader path forgets the guard above.
   const orNull = (i: number) => {
     const v = get(i);
-    return v ? v : null;
+    if (!v || v === "missing value") return null;
+    return v;
   };
   return {
     name: get(0),
@@ -542,7 +636,22 @@ export async function createContact(
   firstName: string,
   lastName: string,
   fields: ContactFields
-): Promise<{ id: string; name: string }> {
+): Promise<{ id: string; name: string; group_added?: string; group_warning?: string }> {
+  // Pre-flight: when ALLOWED_GROUPS is set, the new contact will be
+  // auto-added to the first allowed group. Verify the group exists BEFORE
+  // we create the person so we don't leave an orphan on misconfiguration.
+  const targetGroup = defaultGroup();
+  if (targetGroup) {
+    const existing = await listGroups();
+    const hit = existing.some((g) => g.name === targetGroup);
+    if (!hit) {
+      throw new Error(
+        `Auto-add target group "${targetGroup}" does not exist in Apple Contacts. ` +
+          `Create it first (e.g. via create_group), or unset ALLOWED_GROUPS.`
+      );
+    }
+  }
+
   // Build property list for `make new person`
   const props: string[] = [];
   props.push(`first name:${q(firstName)}`);
@@ -561,12 +670,16 @@ export async function createContact(
 
   const photoSetup = await preparePhotoBlock("newPerson", fields.photo);
 
+  // Step 1 — create the person and save. We do NOT bundle the
+  // add-to-group step into this script: cross-account adds (e.g. person
+  // in "On My Mac" → group in "iCloud") often fail and would otherwise
+  // poison the entire create. We do the add as a separate, recoverable
+  // call so the caller still gets the new id back even if grouping fails.
   const script = `
 tell application "Contacts"
   set newPerson to make new person with properties {${props.join(", ")}}
 ${extras.join("\n")}
 ${photoSetup.script}
-  ${maybeAddToDefaultGroup("newPerson")}
   save
   return (id of newPerson) & "${F}" & (name of newPerson)
 end tell`;
@@ -577,17 +690,43 @@ end tell`;
   } finally {
     photoSetup.cleanup();
   }
-  const [id, name] = result.split(F);
-  return { id: (id ?? "").trim(), name: (name ?? "").trim() };
+  const [rawId, rawName] = result.split(F);
+  const id = (rawId ?? "").trim();
+  const name = (rawName ?? "").trim();
+
+  // Step 2 — auto-add to default group when ALLOWED_GROUPS is restricted.
+  if (targetGroup) {
+    try {
+      await addContactToGroupRaw(id, targetGroup);
+      return { id, name, group_added: targetGroup };
+    } catch (e) {
+      // Surface the failure to the caller so it's not silent — they need
+      // to know the contact landed outside the expected group. The
+      // contact itself is kept (not rolled back) because deletion would
+      // hide the underlying configuration problem.
+      return {
+        id,
+        name,
+        group_warning: `Contact created but auto-add to group "${targetGroup}" failed: ${(e as Error).message}`,
+      };
+    }
+  }
+
+  return { id, name };
 }
 
-function maybeAddToDefaultGroup(varName: string): string {
-  const g = defaultGroup();
-  if (!g) return "";
-  // Use AppleScript-quoted group name
-  return `try
-    add ${varName} to group ${q(g)}
-  end try`;
+// Internal helper: same as addContactToGroup but bypasses the safety
+// check (we just created/looked-up the contact ourselves) so it can be
+// reused from createContact.
+async function addContactToGroupRaw(personId: string, groupName: string): Promise<void> {
+  const script = `
+tell application "Contacts"
+  set p to person id ${q(personId)}
+  set g to first group whose name is ${q(groupName)}
+  add p to g
+  save
+end tell`;
+  await runAppleScript(script);
 }
 
 // ---------- update_contact ----------
@@ -664,10 +803,13 @@ end tell`;
 export async function addContactToGroup(idArg: Identifier, groupName: string): Promise<string> {
   assertGroupAllowed(groupName);
   const personId = await resolvePersonId(idArg);
+  // `first group whose name is X` is more robust than `group "X"` when
+  // multiple groups share the name (it picks the first deterministically)
+  // and resolves correctly across iCloud / On My Mac accounts.
   const script = `
 tell application "Contacts"
   set p to person id ${q(personId)}
-  set g to group ${q(groupName)}
+  set g to first group whose name is ${q(groupName)}
   add p to g
   save
 end tell`;
@@ -681,7 +823,7 @@ export async function removeContactFromGroup(idArg: Identifier, groupName: strin
   const script = `
 tell application "Contacts"
   set p to person id ${q(personId)}
-  set g to group ${q(groupName)}
+  set g to first group whose name is ${q(groupName)}
   remove p from g
   save
 end tell`;

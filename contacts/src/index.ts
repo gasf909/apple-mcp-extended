@@ -40,13 +40,15 @@ server.registerTool(
   "list_contacts",
   {
     description:
-      "List contacts in a group. When ALLOWED_GROUPS env var is set, the group argument is required and must be one of the allowed groups.",
+      "List contacts in a group, paginated. When ALLOWED_GROUPS env var is set, the group argument is required and must be one of the allowed groups. Returns {items, total, offset, limit, next_offset}. Default limit=100, max=500.",
     inputSchema: {
       group: z.string().optional().describe("Group name to filter by"),
+      limit: z.number().int().positive().max(500).optional().describe("Page size (default 100, max 500)"),
+      offset: z.number().int().nonnegative().optional().describe("Skip the first N matches (default 0)"),
     },
   },
-  async ({ group }) => {
-    try { return ok(await contacts.listContacts(group)); } catch (e) { return err(e); }
+  async ({ group, limit, offset }) => {
+    try { return ok(await contacts.listContacts(group, { limit, offset })); } catch (e) { return err(e); }
   }
 );
 
@@ -70,16 +72,18 @@ server.registerTool(
   "get_contact",
   {
     description:
-      "Get full details of a contact. Prefer id; otherwise pass name (with optional phone/email to disambiguate).",
+      "Get full details of a contact. Pass `contact_id` (or `id`) for unambiguous lookup. Otherwise pass `name` (substring/first+last fallback supported) with optional `phone`/`email` to disambiguate.",
     inputSchema: {
-      id: z.string().optional().describe("Apple Contacts person id (preferred)"),
-      name: z.string().optional().describe("Full name"),
+      contact_id: z.string().optional().describe("Apple Contacts person id (preferred). Alias for `id`."),
+      id: z.string().optional().describe("Same as contact_id (back-compat)."),
+      name: z.string().optional().describe("Full or partial name"),
       phone: z.string().optional().describe("Phone for name disambiguation"),
       email: z.string().optional().describe("Email for name disambiguation"),
     },
   },
-  async ({ id, name, phone, email }) => {
-    try { return ok(await contacts.getContact({ id, name, phone, email })); } catch (e) { return err(e); }
+  async ({ contact_id, id, name, phone, email }) => {
+    try { return ok(await contacts.getContact({ id: contact_id ?? id, name, phone, email })); }
+    catch (e) { return err(e); }
   }
 );
 
@@ -109,9 +113,10 @@ server.registerTool(
   "update_contact",
   {
     description:
-      "Update a contact. Prefer id; otherwise name (+ phone/email). Array fields (phones/emails/addresses/urls) REPLACE existing values; legacy single phone/email APPEND.",
+      "Update a contact. Pass `contact_id` (or `id`) for unambiguous lookup; otherwise `name` (+ optional `match_phone`/`match_email`). Array fields phones/emails/addresses/urls REPLACE existing values; legacy single `phone`/`email` APPEND.",
     inputSchema: {
-      id: z.string().optional(),
+      contact_id: z.string().optional().describe("Apple Contacts person id (preferred). Alias for `id`."),
+      id: z.string().optional().describe("Same as contact_id (back-compat)."),
       name: z.string().optional(),
       match_phone: z.string().optional().describe("Phone for name disambiguation"),
       match_email: z.string().optional().describe("Email for name disambiguation"),
@@ -120,8 +125,11 @@ server.registerTool(
   },
   async (args) => {
     try {
-      const { id, name, match_phone, match_email, ...fields } = args;
-      const r = await contacts.updateContact({ id, name, phone: match_phone, email: match_email }, fields);
+      const { contact_id, id, name, match_phone, match_email, ...fields } = args;
+      const r = await contacts.updateContact(
+        { id: contact_id ?? id, name, phone: match_phone, email: match_email },
+        fields
+      );
       return ok(r);
     } catch (e) { return err(e); }
   }
@@ -179,21 +187,23 @@ if (!readOnly) {
     "delete_contact",
     {
       description:
-        "Delete a contact. Requires id; OR name + at least one of phone/email for disambiguation. " +
+        "Delete a contact. Requires `contact_id` (or `id`); OR `name` + at least one of `phone`/`email` for disambiguation. " +
         (confirmDestructive ? "Pass confirm: true to authorize." : ""),
       inputSchema: {
-        id: z.string().optional(),
+        contact_id: z.string().optional().describe("Apple Contacts person id (preferred). Alias for `id`."),
+        id: z.string().optional().describe("Same as contact_id (back-compat)."),
         name: z.string().optional(),
         phone: z.string().optional(),
         email: z.string().optional(),
         ...(confirmDestructive ? { confirm: z.boolean().optional() } : {}),
       },
     },
-    async ({ id, name, phone, email, confirm }: any) => {
+    async ({ contact_id, id, name, phone, email, confirm }: any) => {
       if (confirmDestructive && !confirm) {
         return ok("This will permanently delete the contact. Confirm with confirm: true.");
       }
-      try { return ok(await contacts.deleteContact({ id, name, phone, email })); } catch (e) { return err(e); }
+      try { return ok(await contacts.deleteContact({ id: contact_id ?? id, name, phone, email })); }
+      catch (e) { return err(e); }
     }
   );
 

@@ -75,14 +75,27 @@ After editing `claude_desktop_config.json`, restart Claude Desktop.
 All 11 upstream tools are preserved with extended schemas:
 
 - `list_groups` — filtered by `ALLOWED_GROUPS`
-- `list_contacts(group?)` — group required when restricted
+- `list_contacts(group?, limit?, offset?)` → `{items, total, offset, limit, next_offset}`. Default `limit=100`, max 500. Group is required when ALLOWED_GROUPS is set.
 - `search_contacts(query, group?)` — filtered to allowed groups
-- `get_contact(id? | name? + phone?/email?)` → full `ContactRecord`
-- `create_contact(first_name, last_name, ...all fields)` → `{id, name}`
-- `update_contact(id? | name? + match_phone?/match_email?, ...all fields)` — array fields **replace**, legacy single `phone`/`email` **append**
-- `delete_contact(id | name + phone/email)` — refuses on ambiguity
+- `get_contact(contact_id? | id? | name? + phone?/email?)` → full `ContactRecord`. Name lookup falls back to first+last and substring match.
+- `create_contact(first_name, last_name, ...all fields)` → `{id, name, group_added?, group_warning?}`. When ALLOWED_GROUPS is set, the new contact is auto-added to the first allowed group; failures are reported in `group_warning`.
+- `update_contact(contact_id? | id? | name? + match_phone?/match_email?, ...all fields)` — array fields phones/emails/addresses/urls **REPLACE** existing values; legacy single `phone`/`email` **APPEND**.
+- `delete_contact(contact_id | id | name + phone/email)` — refuses on ambiguity.
 - `create_group(name)` / `delete_group(name)`
 - `add_contact_to_group(contact_id?|contact_name?, group_name)` / `remove_contact_from_group(...)`
+
+### Multi-value field input (Bug 1 reference)
+
+Some MCP clients serialize complex args as JSON strings. The
+`phones`/`emails`/`addresses`/`urls` fields accept either form:
+
+```jsonc
+// Real array (preferred)
+{ "phones": [{ "label": "mobile", "value": "+82 10-1111-2222" }] }
+
+// JSON-stringified array (also accepted)
+{ "phones": "[{\"label\":\"mobile\",\"value\":\"+82 10-1111-2222\"}]" }
+```
 
 ## Field schema (create / update payloads)
 
@@ -110,7 +123,7 @@ All 11 upstream tools are preserved with extended schemas:
 npm run test:roundtrip
 ```
 
-The roundtrip script creates a `__APPLEMCPTEST__` contact, exercises every field, runs an update with array-replacement, and deletes by id. 29 assertions, all should pass. If aborted mid-run, a leftover `__APPLEMCPTEST__` contact may need manual cleanup in Contacts.app.
+The roundtrip script creates `__APPLEMCPTEST__` contacts, exercises every field, validates the 0.2.0 regression cases (missing-value leaks, has_photo, name lookup fallback, jsonOrArray schema, list pagination), and cleans up. 45 assertions, all should pass. If aborted mid-run, a leftover `__APPLEMCPTEST__` contact may need manual cleanup in Contacts.app.
 
 ## Known limitations
 

@@ -4,6 +4,7 @@
 // Uses an unmistakable name prefix so leftovers from a crashed run are obvious.
 
 import * as contacts from "../src/contacts.js";
+import { ContactFieldsSchema } from "../src/types.js";
 
 const TAG = "__APPLEMCPTEST__";
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -110,8 +111,66 @@ async function main() {
   assert(got2.birthday === "1990-12-25", `birthday=${got2.birthday}`);
   assert(got2.note === "single line after update", "note replaced");
 
-  // ----- DELETE by id -----
-  console.log("\n[5] delete_contact by id");
+  // ----- 0.2.0 regression: minimal contact (no prefix/suffix/photo) -----
+  console.log("\n[5] minimal contact: missing-value + has_photo regression");
+  const bare = await contacts.createContact(`${TAG}Bare`, `${TAG}Last`, {
+    organization: "BareOrg",
+  });
+  const gotBare = await contacts.getContact({ id: bare.id });
+  assert(gotBare.prefix === null, `bare prefix=${JSON.stringify(gotBare.prefix)} (expect null, not "missing value")`);
+  assert(gotBare.suffix === null, `bare suffix=${JSON.stringify(gotBare.suffix)} (expect null)`);
+  assert(gotBare.nickname === null, `bare nickname=${JSON.stringify(gotBare.nickname)} (expect null)`);
+  assert(gotBare.department === null, `bare department=${JSON.stringify(gotBare.department)} (expect null)`);
+  assert(gotBare.note === null, `bare note=${JSON.stringify(gotBare.note)} (expect null)`);
+  assert(gotBare.has_photo === false, `bare has_photo=${gotBare.has_photo} (expect false)`);
+  await contacts.deleteContact({ id: bare.id });
+
+  // ----- 0.2.0 regression: name lookup fallback (Issue 5) -----
+  console.log("\n[6] name lookup fallback: first+last when prefix is set");
+  const drC = await contacts.createContact(`${TAG}Foo`, `${TAG}Bar`, {
+    prefix: "Dr.",
+  });
+  // Display name will be "Dr. __APPLEMCPTEST__Foo __APPLEMCPTEST__Bar".
+  // Looking up by "first last" (without prefix) used to fail.
+  let lookupOk = false;
+  try {
+    const found = await contacts.getContact({ name: `${TAG}Foo ${TAG}Bar` });
+    lookupOk = found.id === drC.id;
+  } catch (e) {
+    console.log(`    lookup error: ${(e as Error).message}`);
+  }
+  assert(lookupOk, "first+last lookup succeeds when prefix is set");
+  await contacts.deleteContact({ id: drC.id });
+
+  // ----- 0.2.0 regression: jsonOrArray (Bug 1) — schema-only test -----
+  console.log("\n[7] schema: phones[] accepts JSON-stringified array");
+  const parsed = ContactFieldsSchema.parse({
+    phones: '[{"label":"mobile","value":"+82 10-1111-2222"}]',
+  });
+  assert(Array.isArray(parsed.phones), "phones parsed as array");
+  assert(parsed.phones?.[0]?.value === "+82 10-1111-2222", "phones[0].value");
+  // Real array still works
+  const parsed2 = ContactFieldsSchema.parse({
+    phones: [{ label: "work", value: "x" }],
+  });
+  assert(parsed2.phones?.[0]?.label === "work", "raw array still accepted");
+
+  // ----- 0.2.0 regression: list_contacts pagination (Issue 7) -----
+  console.log("\n[8] list_contacts pagination shape");
+  const page = await contacts.listContacts(undefined, { limit: 2, offset: 0 });
+  assert(Array.isArray(page.items), "page.items is array");
+  assert(typeof page.total === "number" && page.total >= 0, `page.total=${page.total}`);
+  assert(page.limit === 2, `page.limit=${page.limit}`);
+  assert(page.offset === 0, `page.offset=${page.offset}`);
+  if (page.total >= 3) {
+    assert(page.items.length === 2, `items.length=${page.items.length}`);
+    assert(page.next_offset === 2, `next_offset=${page.next_offset}`);
+  } else {
+    console.log(`  (skipped strict pagination assertions; total=${page.total} < 3)`);
+  }
+
+  // ----- DELETE main contact -----
+  console.log("\n[9] delete_contact by id");
   const delMsg = await contacts.deleteContact({ id: created.id });
   console.log(`  ${delMsg}`);
 

@@ -1,5 +1,38 @@
 import { z } from "zod";
 
+// Some MCP clients (and any caller that goes through a JSON tool-call
+// transport that flattens object args to strings) will send array params
+// as a JSON-encoded string, e.g. phones: '[{"label":"mobile","value":"x"}]'.
+// jsonOrArray() accepts both the raw array and the string form so callers
+// don't have to know which serializer is in use.
+export function jsonOrArray<T extends z.ZodTypeAny>(itemSchema: T) {
+  const arr = z.array(itemSchema);
+  return z.union([
+    arr,
+    z.string().transform((s, ctx) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(s);
+      } catch (e) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `expected array or JSON string of array; ${(e as Error).message}`,
+        });
+        return z.NEVER;
+      }
+      const result = arr.safeParse(parsed);
+      if (!result.success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `parsed JSON did not match schema: ${result.error.message}`,
+        });
+        return z.NEVER;
+      }
+      return result.data;
+    }),
+  ]);
+}
+
 // Label enums
 export const PhoneLabel = z.enum(["mobile", "work", "home", "main", "other"]);
 export const EmailLabel = z.enum(["work", "home", "other"]);
@@ -41,10 +74,10 @@ export const ContactFieldsSchema = z.object({
   organization: z.string().optional(),
   department: z.string().optional(),
   job_title: z.string().optional(),
-  phones: z.array(PhoneSchema).optional().describe("Replaces all existing phones when provided"),
-  emails: z.array(EmailSchema).optional().describe("Replaces all existing emails when provided"),
-  addresses: z.array(AddressSchema).optional().describe("Replaces all existing addresses when provided"),
-  urls: z.array(UrlSchema).optional().describe("Replaces all existing urls when provided"),
+  phones: jsonOrArray(PhoneSchema).optional().describe("Replaces all existing phones when provided. Accepts array or JSON-stringified array."),
+  emails: jsonOrArray(EmailSchema).optional().describe("Replaces all existing emails when provided. Accepts array or JSON-stringified array."),
+  addresses: jsonOrArray(AddressSchema).optional().describe("Replaces all existing addresses when provided. Accepts array or JSON-stringified array."),
+  urls: jsonOrArray(UrlSchema).optional().describe("Replaces all existing urls when provided. Accepts array or JSON-stringified array."),
   birthday: z.string().optional().describe("ISO date YYYY-MM-DD or MM-DD"),
   photo: z.string().optional().describe("Base64-encoded image, or absolute file path starting with /"),
   note: z.string().optional().describe("Free-form notes; newlines are preserved"),
@@ -88,4 +121,13 @@ export interface ContactSummary {
   organization: string | null;
   primary_phone: string | null;
   primary_email: string | null;
+}
+
+// Output of list_contacts (paginated wrapper, since 0.2.0)
+export interface ListContactsResult {
+  items: ContactSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  next_offset: number | null;
 }
