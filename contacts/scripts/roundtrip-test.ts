@@ -3,6 +3,8 @@
 //
 // Uses an unmistakable name prefix so leftovers from a crashed run are obvious.
 
+import { z } from "zod";
+
 import * as contacts from "../src/contacts.js";
 import { ContactFieldsSchema } from "../src/types.js";
 
@@ -168,6 +170,26 @@ async function main() {
   } else {
     console.log(`  (skipped strict pagination assertions; total=${page.total} < 3)`);
   }
+
+  // ----- 0.2.2 regression: list_contacts limit/offset accept stringified numbers -----
+  console.log("\n[P1-022] list_contacts limit/offset coerced from string");
+  // Mirror the index.ts schema exactly so we test the actual coercion path.
+  const listSchema = z.object({
+    group: z.string().optional(),
+    limit: z.coerce.number().int().positive().max(500).optional(),
+    offset: z.coerce.number().int().nonnegative().optional(),
+    summary: z
+      .union([z.boolean(), z.enum(["true", "false", "1", "0"]).transform((s) => s === "true" || s === "1")])
+      .optional(),
+  });
+  const coerced = listSchema.parse({ limit: "200", offset: "10", summary: "true" });
+  assert(coerced.limit === 200 && typeof coerced.limit === "number", `limit coerced to number (got ${coerced.limit})`);
+  assert(coerced.offset === 10, `offset coerced (got ${coerced.offset})`);
+  assert(coerced.summary === true, `summary "true" → true`);
+  const coerced2 = listSchema.parse({ summary: "false" });
+  assert(coerced2.summary === false, `summary "false" → false (not truthy)`);
+  const coerced3 = listSchema.parse({ limit: 5, offset: 0, summary: true });
+  assert(coerced3.limit === 5 && coerced3.summary === true, "raw number/boolean still accepted");
 
   // ----- 0.2.1 regression: address subfield must not leak "missing value" -----
   console.log("\n[P1] address subfield missing-value regression");

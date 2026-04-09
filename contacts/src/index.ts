@@ -43,9 +43,17 @@ server.registerTool(
       "List contacts in a group, paginated. When ALLOWED_GROUPS env var is set, the group argument is required and must be one of the allowed groups. Returns {items, total, offset, limit, next_offset}. Default limit=50, max=500. Set summary=true to return id+name only (organization/phone/email omitted) for cheaper enumeration of large groups.",
     inputSchema: {
       group: z.string().optional().describe("Group name to filter by"),
-      limit: z.number().int().positive().max(500).optional().describe("Page size (default 50, max 500)"),
-      offset: z.number().int().nonnegative().optional().describe("Skip the first N matches (default 0)"),
-      summary: z.boolean().optional().describe("When true, items contain only id and name (~30B each) — ~3x smaller payload"),
+      // z.coerce.* tolerates clients that serialize numeric/boolean tool
+      // args as strings (same root cause as the array→JSON-string fix
+      // in 0.2.0).
+      limit: z.coerce.number().int().positive().max(500).optional().describe("Page size (default 50, max 500)"),
+      offset: z.coerce.number().int().nonnegative().optional().describe("Skip the first N matches (default 0)"),
+      // Note: z.coerce.boolean treats any non-empty string as true
+      // (including "false"), so we coerce manually here.
+      summary: z
+        .union([z.boolean(), z.enum(["true", "false", "1", "0"]).transform((s) => s === "true" || s === "1")])
+        .optional()
+        .describe("When true, items contain only id and name (~30B each) — ~3x smaller payload"),
     },
   },
   async ({ group, limit, offset, summary }) => {

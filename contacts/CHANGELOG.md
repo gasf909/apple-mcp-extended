@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2
+
+### Fixed
+
+- **`list_contacts` rejected `limit` / `offset` when the MCP client sent
+  them as JSON strings.** Same root cause as the array→JSON-string fix
+  in 0.2.0 — some clients flatten primitive args to strings. The
+  `limit` and `offset` schemas now use `z.coerce.number()` so both
+  numbers and numeric strings are accepted. The `summary` flag has its
+  own union (avoiding `z.coerce.boolean`, which would treat the literal
+  string `"false"` as `true`).
+
 ## 0.2.1
 
 Follow-up fixes from a second BNM sync-workflow session on top of 0.2.0.
