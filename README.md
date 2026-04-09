@@ -1,3 +1,20 @@
+> ## 📌 This is a fork — `apple-mcp-extended`
+>
+> This repo is a fork of [griches/apple-mcp](https://github.com/griches/apple-mcp). The only module that has been extended here is **`contacts/`**, which is published to npm as [`@gasf030304/apple-contacts-extended`](https://www.npmjs.com/package/@gasf030304/apple-contacts-extended). All other modules (mail, calendar, notes, reminders, messages, maps) are unchanged from upstream.
+>
+> **For the contacts fork:** see **[`contacts/README.md`](contacts/README.md)** and **[`contacts/CHANGELOG.md`](contacts/CHANGELOG.md)**.
+>
+> Highlights vs. upstream contacts module:
+> - Full field support: `prefix`/`suffix`/`nickname`/`department`/`birthday`/`photo`/`urls`/structured `addresses` + multi-value `phones[]` and `emails[]` with labels
+> - `id`-first identifier resolution (no more silent first-match deletes)
+> - `ALLOWED_GROUPS` env var enforces a code-level group whitelist
+> - Pagination on `list_contacts` (`limit`/`offset`/`summary`)
+> - Bug fixes vs upstream: note newlines preserved as real newlines, phone label silently dropped on macOS Sonoma+, and more
+>
+> The rest of this README is upstream's documentation, kept verbatim for reference on the unchanged modules.
+>
+> ---
+
 # Apple MCP Servers
 
 A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io) servers that provide AI assistants with access to native Apple applications on macOS.
