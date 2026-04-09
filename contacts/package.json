@@ -1,38 +1,24 @@
 {
-  "name": "@griches/apple-contacts-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for interacting with Apple Contacts on macOS",
-  "main": "build/index.js",
+  "name": "apple-mcp-extended",
+  "version": "0.1.0",
+  "description": "Extended MCP server for Apple Contacts (fork of @griches/apple-contacts-mcp) with full field support and group safety",
+  "type": "module",
+  "main": "dist/index.js",
   "bin": {
-    "apple-contacts-mcp": "build/index.js"
+    "apple-contacts-extended": "dist/index.js"
   },
   "files": [
-    "build/**/*.js",
-    "build/**/*.d.ts",
-    "README.md"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "start": "node build/index.js",
-    "test": "bun test",
-    "test:clean": "bun test --bail",
-    "prepublishOnly": "npm run build"
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test:roundtrip": "tsx scripts/roundtrip-test.ts"
   },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "apple",
-    "contacts",
-    "macos",
-    "applescript"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/griches/apple-mcp.git",
-    "directory": "contacts"
-  },
-  "homepage": "https://github.com/griches/apple-mcp/tree/main/contacts",
   "engines": {
     "node": ">=18.0.0"
   },
@@ -42,6 +28,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "tsx": "^4.19.0",
     "typescript": "^5.8.3"
-  }
+  },
+  "license": "MIT"
 }
