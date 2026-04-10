@@ -8,6 +8,9 @@ import { z } from "zod";
 
 import * as contacts from "./contacts.js";
 import { ContactFieldsSchema, BatchCreateEntrySchema, BatchUpdateEntrySchema, jsonOrArray } from "./types.js";
+
+// Reusable helper: accept raw string[] or JSON-stringified string[]
+const StringArrayOrJson = jsonOrArray(z.string());
 import { isRestricted, allowedGroups } from "./safety.js";
 
 const readOnly = process.argv.includes("--read-only");
@@ -190,6 +193,25 @@ server.registerTool(
     try {
       const validated = (entries as any[]).map((e: any) => BatchUpdateEntrySchema.parse(e));
       return ok(await contacts.batchUpdateContacts(validated));
+    } catch (e) { return err(e); }
+  }
+);
+
+// ---- batch_get_contacts ----
+server.registerTool(
+  "batch_get_contacts",
+  {
+    description:
+      "Get full details of multiple contacts in one call (max 500). Returns the same ContactRecord as get_contact for each ID. " +
+      "Read-only; no ALLOWED_GROUPS restriction. Partial success: not-found IDs are reported as errors.",
+    inputSchema: {
+      contact_ids: StringArrayOrJson
+        .describe("Array of Apple Contacts person IDs (from list_contacts). 1-500 items. Accepts array or JSON-stringified array."),
+    },
+  },
+  async ({ contact_ids }) => {
+    try {
+      return ok(await contacts.batchGetContacts(contact_ids as string[]));
     } catch (e) { return err(e); }
   }
 );

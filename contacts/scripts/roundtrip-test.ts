@@ -291,6 +291,69 @@ async function main() {
   }
   console.log(`  cleaned up ${idsToUpdate.length} batch contacts`);
 
+  // ----- batch_get_contacts -----
+  console.log("\n[BATCH-G] batch_get_contacts");
+  // Create 3 contacts for batch get
+  const bgIds: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const c = await contacts.createContact(`${TAG}BG${i}`, "Get", {
+      organization: `BGOrg${i}`,
+      phones: [{ label: "mobile", value: `+82 10-${String(i).padStart(4, "0")}-0000` }],
+      note: `bg note ${i}\n줄2`,
+    });
+    bgIds.push(c.id);
+  }
+  // Normal batch get
+  const bgResult = await contacts.batchGetContacts(bgIds);
+  assert(bgResult.total === 3, `bg total=${bgResult.total}`);
+  assert(bgResult.succeeded === 3, `bg succeeded=${bgResult.succeeded}`);
+  assert(bgResult.failed === 0, `bg failed=${bgResult.failed}`);
+  const bg0 = bgResult.results[0]!;
+  assert(bg0.status === "ok" && bg0.contact_id === bgIds[0], "bg[0] ok + contact_id echo");
+  assert(bg0.contact?.first_name === `${TAG}BG0`, `bg[0] first_name=${bg0.contact?.first_name}`);
+  assert(bg0.contact?.organization === "BGOrg0", `bg[0] org=${bg0.contact?.organization}`);
+  assert(bg0.contact?.phones.length === 1, "bg[0] phones count");
+  assert(bg0.contact?.note?.includes("줄2"), "bg[0] note newline preserved");
+  // Include a nonexistent ID
+  const bgMixed = await contacts.batchGetContacts([bgIds[0]!, "NONEXISTENT:ABPerson", bgIds[2]!]);
+  assert(bgMixed.succeeded === 2, `bg-mixed succeeded=${bgMixed.succeeded}`);
+  assert(bgMixed.failed === 1, `bg-mixed failed=${bgMixed.failed}`);
+  assert(bgMixed.results[1]?.status === "error", "bg-mixed[1] error");
+  assert(bgMixed.results[1]?.contact_id === "NONEXISTENT:ABPerson", "bg-mixed[1] contact_id echo");
+  assert(bgMixed.results[0]?.status === "ok" && bgMixed.results[2]?.status === "ok", "bg-mixed[0,2] ok");
+  // Empty ID should fail pre-validation
+  const bgEmpty = await contacts.batchGetContacts([bgIds[0]!, ""]);
+  assert(bgEmpty.failed === 1, "bg empty-id fails");
+  assert(bgEmpty.results[1]?.error?.includes("non-empty"), `bg empty-id error msg`);
+  // JSON-string array schema test
+  const bgSchema = z.union([
+    z.array(z.string()),
+    z.string().transform((s) => JSON.parse(s) as string[]),
+  ]);
+  const bgParsed = bgSchema.parse(JSON.stringify(bgIds));
+  assert(Array.isArray(bgParsed) && bgParsed.length === 3, "JSON-stringified string[] parsed");
+
+  // Cleanup
+  for (const id of bgIds) {
+    await contacts.deleteContact({ id });
+  }
+  console.log(`  cleaned up ${bgIds.length} batch-get contacts`);
+
+  // ----- Performance benchmark: batch_get N=100 -----
+  console.log("\n[PERF] batch_get_contacts performance benchmark");
+  // Use existing contacts (listContacts first 100)
+  const perfPage = await contacts.listContacts(undefined, { limit: 100, offset: 0 });
+  if (perfPage.items.length >= 10) {
+    const perfIds = perfPage.items.map((it) => it.id);
+    const t0 = Date.now();
+    const perfResult = await contacts.batchGetContacts(perfIds);
+    const elapsed = Date.now() - t0;
+    console.log(`  batch_get ${perfIds.length} contacts: ${elapsed}ms (${perfResult.succeeded} ok, ${perfResult.failed} err)`);
+    assert(perfResult.succeeded === perfIds.length, `perf all succeeded`);
+  } else {
+    console.log(`  (skipped: only ${perfPage.items.length} contacts available, need >=10)`);
+  }
+
   // ----- DELETE main contact -----
   console.log("\n[9] delete_contact by id");
   const delMsg = await contacts.deleteContact({ id: created.id });

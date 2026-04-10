@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **`batch_get_contacts`** — retrieve full details of up to 250
+  contacts in a single MCP call. Each entry returns the same
+  `ContactRecord` as `get_contact`. All reads are executed in a
+  single AppleScript process (no `save`; read-only).
+  - Input: `{contact_ids: string[]}` — raw array or JSON-stringified
+    array. 1-250 items.
+  - Output: `{total, succeeded, failed, results}` where each result
+    has `{index, status, contact_id, contact?, error?}`.
+  - Partial success: not-found IDs are reported as errors without
+    affecting other items.
+  - No ALLOWED_GROUPS restriction (read-only; group filtering is the
+    caller's responsibility via `list_contacts`).
+  - Pre-validates each ID; empty strings are reported as errors
+    without running AppleScript.
+
+### Performance notes
+
+| Batch size | Elapsed (iCloud-synced, macOS Sequoia) |
+|---|---|
+| 100 contacts | ~174s (~1.7s/contact) |
+
+The per-contact cost is dominated by AppleScript's per-person property
+reads. The single-process approach is still ~2x faster than calling
+`get_contact` 100 times (which incurs 100 `osascript` launches).
+
+`BATCH_GET_MAX` was initially set to 500 but lowered to 250 after
+benchmarking: 500 contacts would take ~15min, exceeding osascript's
+practical timeout on many systems.
+
 ## 0.3.0
 
 ### Added

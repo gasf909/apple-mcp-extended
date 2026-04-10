@@ -167,3 +167,20 @@ export interface BatchResult {
   failed: number;
   results: BatchItemResult[];
 }
+
+// ---- Batch get schemas (since 0.4.0) ----
+
+export interface BatchGetItemResult {
+  index: number;
+  status: "ok" | "error";
+  contact_id: string;
+  contact?: ContactRecord;
+  error?: string;
+}
+
+export interface BatchGetResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchGetItemResult[];
+}

@@ -24,6 +24,8 @@ import {
   BatchUpdateEntry,
   BatchItemResult,
   BatchResult,
+  BatchGetItemResult,
+  BatchGetResult,
   Phone,
   Email,
   Url,
@@ -1149,6 +1151,255 @@ end tell`;
   }
 
   return { total: entries.length, succeeded, failed, results };
+}
+
+// ---------- batch_get_contacts ----------
+
+// Initially set to 500 but lowered to 250 after benchmarking: 100 contacts
+// took ~174s in a single AppleScript run. At 500 the script would exceed
+// osascript's practical timeout (~5-10min depending on system load).
+// 250 contacts ≈ 4-5min which is aggressive but usually safe.
+const BATCH_GET_MAX = 250;
+
+// The per-person AppleScript read block used by both getContact and
+// batchGetContacts. The variable `p` must already be set to the person
+// reference. Returns a string expression that evaluates to the
+// F-delimited record (same order as parseContactRecord expects).
+function personReadBlock(): string {
+  return `
+  set theName to name of p
+  set thePrefix to ""
+  try
+    set tmp to title of p
+    if tmp is not missing value then set thePrefix to tmp as text
+  end try
+  set theFirst to ""
+  try
+    set tmp to first name of p
+    if tmp is not missing value then set theFirst to tmp as text
+  end try
+  set theLast to ""
+  try
+    set tmp to last name of p
+    if tmp is not missing value then set theLast to tmp as text
+  end try
+  set theSuffix to ""
+  try
+    set tmp to suffix of p
+    if tmp is not missing value then set theSuffix to tmp as text
+  end try
+  set theNick to ""
+  try
+    set tmp to nickname of p
+    if tmp is not missing value then set theNick to tmp as text
+  end try
+  set theOrg to ""
+  try
+    set tmp to organization of p
+    if tmp is not missing value then set theOrg to tmp as text
+  end try
+  set theDept to ""
+  try
+    set tmp to department of p
+    if tmp is not missing value then set theDept to tmp as text
+  end try
+  set theTitle to ""
+  try
+    set tmp to job title of p
+    if tmp is not missing value then set theTitle to tmp as text
+  end try
+
+  set phStr to ""
+  try
+    repeat with x in phones of p
+      set lbl to ""
+      try
+        set lbl to label of x
+      end try
+      set v to value of x
+      set sub to lbl & "${KV}" & v
+      if phStr is "" then
+        set phStr to sub
+      else
+        set phStr to phStr & "${S}" & sub
+      end if
+    end repeat
+  end try
+
+  set emStr to ""
+  try
+    repeat with x in emails of p
+      set lbl to ""
+      try
+        set lbl to label of x
+      end try
+      set v to value of x
+      set sub to lbl & "${KV}" & v
+      if emStr is "" then
+        set emStr to sub
+      else
+        set emStr to emStr & "${S}" & sub
+      end if
+    end repeat
+  end try
+
+  set adStr to ""
+  try
+    repeat with x in addresses of p
+      set lbl to ""
+      try
+        set lbl to label of x
+      end try
+      set streetVal to ""
+      try
+        set tmp to street of x
+        if tmp is not missing value then set streetVal to tmp as text
+      end try
+      set cityVal to ""
+      try
+        set tmp to city of x
+        if tmp is not missing value then set cityVal to tmp as text
+      end try
+      set stateVal to ""
+      try
+        set tmp to state of x
+        if tmp is not missing value then set stateVal to tmp as text
+      end try
+      set zipVal to ""
+      try
+        set tmp to zip of x
+        if tmp is not missing value then set zipVal to tmp as text
+      end try
+      set countryVal to ""
+      try
+        set tmp to country of x
+        if tmp is not missing value then set countryVal to tmp as text
+      end try
+      set sub to lbl & "${KV}" & streetVal & "${KV}" & cityVal & "${KV}" & stateVal & "${KV}" & zipVal & "${KV}" & countryVal
+      if adStr is "" then
+        set adStr to sub
+      else
+        set adStr to adStr & "${S}" & sub
+      end if
+    end repeat
+  end try
+
+  set urStr to ""
+  try
+    repeat with x in urls of p
+      set lbl to ""
+      try
+        set lbl to label of x
+      end try
+      set v to value of x
+      set sub to lbl & "${KV}" & v
+      if urStr is "" then
+        set urStr to sub
+      else
+        set urStr to urStr & "${S}" & sub
+      end if
+    end repeat
+  end try
+
+  set bdStr to ""
+  try
+    set bd to birth date of p
+    set yr to year of bd
+    set mo to month of bd as integer
+    set dy to day of bd
+    set bdStr to (yr as string) & "-" & (mo as string) & "-" & (dy as string)
+  end try
+
+  set ntStr to ""
+  try
+    set tmp to note of p
+    if tmp is not missing value then set ntStr to tmp as text
+  end try
+
+  set hasImg to "0"
+  try
+    set img to image of p
+    if img is not missing value then set hasImg to "1"
+  end try
+
+  set contactRec to theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg`;
+}
+
+export async function batchGetContacts(contactIds: string[]): Promise<BatchGetResult> {
+  if (contactIds.length === 0) throw new Error("contact_ids array must not be empty");
+  if (contactIds.length > BATCH_GET_MAX) throw new Error(`contact_ids array exceeds maximum of ${BATCH_GET_MAX}`);
+
+  // Pre-validate: skip empty IDs
+  const preErrors: (string | null)[] = contactIds.map((id) =>
+    id && id.trim() ? null : "contact_id must be a non-empty string"
+  );
+
+  // Build one AppleScript block per valid ID. Each block reads the full
+  // contact record (same fields as getContact) and appends to `out`.
+  // On error (e.g. not found), outputs "ERROR|||message" instead.
+  const readBlock = personReadBlock();
+  const perIdBlocks: string[] = [];
+
+  for (let i = 0; i < contactIds.length; i++) {
+    if (preErrors[i] !== null) continue;
+    const pid = contactIds[i]!.trim();
+    perIdBlocks.push(`
+    -- get ${i}
+    try
+      set p to person id ${q(pid)}
+${readBlock}
+      set out to out & contactRec & "${BATCH_DELIM}"
+    on error errMsg
+      set out to out & "ERROR${F}" & errMsg & "${BATCH_DELIM}"
+    end try`);
+  }
+
+  let rawOutput = "";
+  if (perIdBlocks.length > 0) {
+    const script = `
+tell application "Contacts"
+  set out to ""
+${perIdBlocks.join("\n")}
+  return out
+end tell`;
+    rawOutput = await runAppleScript(script);
+  }
+
+  const asResults = rawOutput
+    ? rawOutput.split(BATCH_DELIM).filter((s) => s.length > 0)
+    : [];
+
+  const results: BatchGetItemResult[] = [];
+  let asIdx = 0;
+  let succeeded = 0;
+  let failed = 0;
+
+  for (let i = 0; i < contactIds.length; i++) {
+    const cid = contactIds[i] ?? "";
+    if (preErrors[i] !== null) {
+      results.push({ index: i, status: "error", contact_id: cid, error: preErrors[i]! });
+      failed++;
+      continue;
+    }
+    const asRec = asResults[asIdx++] ?? "";
+    // Check if this is an error record (starts with "ERROR|||")
+    if (asRec.startsWith("ERROR" + F)) {
+      const errMsg = asRec.slice(("ERROR" + F).length).trim();
+      results.push({ index: i, status: "error", contact_id: cid, error: errMsg || "Unknown error" });
+      failed++;
+    } else {
+      try {
+        const contact = parseContactRecord(asRec);
+        results.push({ index: i, status: "ok", contact_id: cid, contact });
+        succeeded++;
+      } catch (e) {
+        results.push({ index: i, status: "error", contact_id: cid, error: `Parse error: ${(e as Error).message}` });
+        failed++;
+      }
+    }
+  }
+
+  return { total: contactIds.length, succeeded, failed, results };
 }
 
 // ---------- helpers for create/update child collections ----------
