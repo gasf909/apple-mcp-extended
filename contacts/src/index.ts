@@ -7,7 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import * as contacts from "./contacts.js";
-import { ContactFieldsSchema } from "./types.js";
+import { ContactFieldsSchema, BatchCreateEntrySchema, BatchUpdateEntrySchema, jsonOrArray } from "./types.js";
 import { isRestricted, allowedGroups } from "./safety.js";
 
 const readOnly = process.argv.includes("--read-only");
@@ -146,6 +146,50 @@ server.registerTool(
         fields
       );
       return ok(r);
+    } catch (e) { return err(e); }
+  }
+);
+
+// ---- batch_create_contacts ----
+server.registerTool(
+  "batch_create_contacts",
+  {
+    description:
+      "Create multiple contacts in one call (max 100). Each entry uses the same schema as create_contact. " +
+      "Returns per-item success/failure. Partial success: failures do not roll back other items.",
+    inputSchema: {
+      contacts: jsonOrArray(BatchCreateEntrySchema)
+        .describe("Array of contact objects (same fields as create_contact). 1-100 items. Accepts array or JSON-stringified array."),
+    },
+  },
+  async ({ contacts: entries }) => {
+    try {
+      // Per-item name validation (at least one of first/last/org)
+      const validated = (entries as any[]).map((e: any) => {
+        const parsed = BatchCreateEntrySchema.parse(e);
+        return parsed;
+      });
+      return ok(await contacts.batchCreateContacts(validated));
+    } catch (e) { return err(e); }
+  }
+);
+
+// ---- batch_update_contacts ----
+server.registerTool(
+  "batch_update_contacts",
+  {
+    description:
+      "Update multiple contacts in one call (max 100). Each entry requires contact_id for unambiguous lookup. " +
+      "Returns per-item success/failure. Array fields (phones/emails/addresses/urls) REPLACE existing values.",
+    inputSchema: {
+      contacts: jsonOrArray(BatchUpdateEntrySchema)
+        .describe("Array of update objects. Each must have contact_id (or id) + fields to update. 1-100 items. Accepts array or JSON-stringified array."),
+    },
+  },
+  async ({ contacts: entries }) => {
+    try {
+      const validated = (entries as any[]).map((e: any) => BatchUpdateEntrySchema.parse(e));
+      return ok(await contacts.batchUpdateContacts(validated));
     } catch (e) { return err(e); }
   }
 );

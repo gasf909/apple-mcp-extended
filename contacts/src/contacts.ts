@@ -20,6 +20,10 @@ import {
   ContactRecord,
   ContactSummary,
   ListContactsResult,
+  BatchCreateEntry,
+  BatchUpdateEntry,
+  BatchItemResult,
+  BatchResult,
   Phone,
   Email,
   Url,
@@ -867,6 +871,284 @@ tell application "Contacts"
 end tell`;
   await runAppleScript(script);
   return `Removed ${personId} from group ${groupName}`;
+}
+
+// ---------- batch_create_contacts ----------
+
+const BATCH_MAX = 100;
+const BATCH_DELIM = "<<<BATCH>>>";
+
+export async function batchCreateContacts(entries: BatchCreateEntry[]): Promise<BatchResult> {
+  if (entries.length === 0) throw new Error("contacts array must not be empty");
+  if (entries.length > BATCH_MAX) throw new Error(`contacts array exceeds maximum of ${BATCH_MAX}`);
+
+  // Pre-flight group check (same as single create)
+  const targetGroup = defaultGroup();
+  if (targetGroup) {
+    const existing = await listGroups();
+    if (!existing.some((g) => g.name === targetGroup)) {
+      throw new Error(
+        `Auto-add target group "${targetGroup}" does not exist in Apple Contacts. ` +
+          `Create it first (e.g. via create_group), or unset ALLOWED_GROUPS.`
+      );
+    }
+  }
+
+  // Prepare photo temp files upfront (so we can clean them all up)
+  const photoCleanups: (() => void)[] = [];
+  const photoBlocks: PhotoBlock[] = [];
+  for (const entry of entries) {
+    const pb = await preparePhotoBlock("newPerson", entry.photo);
+    photoBlocks.push(pb);
+    photoCleanups.push(pb.cleanup);
+  }
+
+  // Build a single AppleScript with one try block per contact.
+  // Each contact block outputs: "ok|||ID|||NAME" or "error|||message"
+  // Blocks separated by BATCH_DELIM.
+  const contactBlocks: string[] = [];
+  const preValidationErrors: (string | null)[] = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const firstName = entry.first_name;
+    const lastName = entry.last_name;
+
+    // Pre-validate in JS (don't waste the whole AppleScript call)
+    if (!firstName && !lastName && !entry.organization) {
+      preValidationErrors.push("At least one of first_name, last_name, or organization is required");
+      contactBlocks.push(""); // placeholder
+      continue;
+    }
+    preValidationErrors.push(null); // ok to proceed
+
+    const props: string[] = [];
+    if (firstName) props.push(`first name:${q(firstName)}`);
+    if (lastName) props.push(`last name:${q(lastName)}`);
+    if (entry.prefix) props.push(`title:${q(entry.prefix)}`);
+    if (entry.suffix) props.push(`suffix:${q(entry.suffix)}`);
+    if (entry.nickname) props.push(`nickname:${q(entry.nickname)}`);
+    if (entry.organization) props.push(`organization:${q(entry.organization)}`);
+    if (entry.department) props.push(`department:${q(entry.department)}`);
+    if (entry.job_title) props.push(`job title:${q(entry.job_title)}`);
+    if (entry.note) props.push(`note:${q(entry.note)}`);
+
+    const extras: string[] = [];
+    appendChildBlocks(extras, "newPerson", entry, /*isUpdate*/ false);
+    appendBirthdayBlock(extras, "newPerson", entry.birthday);
+
+    const photoScript = photoBlocks[i]!.script;
+
+    const block = `
+    -- contact ${i}
+    try
+      set newPerson to make new person with properties {${props.join(", ")}}
+${extras.map((l) => "      " + l).join("\n")}
+      ${photoScript}
+      set out to out & "ok${F}" & (id of newPerson) & "${F}" & (name of newPerson) & "${BATCH_DELIM}"
+    on error errMsg
+      set out to out & "error${F}" & errMsg & "${BATCH_DELIM}"
+    end try`;
+    contactBlocks.push(block);
+  }
+
+  // Build the full script. Only contacts that passed pre-validation go in.
+  const liveBlocks = contactBlocks.filter((_, i) => preValidationErrors[i] === null);
+  const script = `
+tell application "Contacts"
+  set out to ""
+${liveBlocks.join("\n")}
+  save
+  return out
+end tell`;
+
+  let rawOutput = "";
+  try {
+    if (liveBlocks.length > 0) {
+      rawOutput = await runAppleScript(script);
+    }
+  } finally {
+    for (const cleanup of photoCleanups) cleanup();
+  }
+
+  // Parse AppleScript results for the live entries
+  const asResults = rawOutput
+    ? rawOutput.split(BATCH_DELIM).filter((s) => s.length > 0)
+    : [];
+
+  // Merge pre-validation errors and AppleScript results in order
+  const results: BatchItemResult[] = [];
+  let asIdx = 0;
+  let succeeded = 0;
+  let failed = 0;
+
+  for (let i = 0; i < entries.length; i++) {
+    if (preValidationErrors[i] !== null) {
+      results.push({ index: i, status: "error", error: preValidationErrors[i]! });
+      failed++;
+      continue;
+    }
+    const asRec = asResults[asIdx++] ?? "";
+    const parts = asRec.split(F);
+    if (parts[0]?.trim() === "ok" && parts[1]) {
+      const id = parts[1].trim();
+      const name = parts[2]?.trim() ?? "";
+      results.push({ index: i, status: "ok", id, name });
+      succeeded++;
+    } else {
+      results.push({ index: i, status: "error", error: parts[1]?.trim() || "Unknown AppleScript error" });
+      failed++;
+    }
+  }
+
+  // Auto-add to group (per-item, non-fatal)
+  if (targetGroup) {
+    for (const r of results) {
+      if (r.status !== "ok" || !r.id) continue;
+      try {
+        await addContactToGroupRaw(r.id, targetGroup);
+        r.group_added = targetGroup;
+      } catch (e) {
+        r.group_warning = `Auto-add to "${targetGroup}" failed: ${(e as Error).message}`;
+      }
+    }
+  }
+
+  return { total: entries.length, succeeded, failed, results };
+}
+
+// ---------- batch_update_contacts ----------
+
+export async function batchUpdateContacts(
+  entries: BatchUpdateEntry[]
+): Promise<BatchResult> {
+  if (entries.length === 0) throw new Error("contacts array must not be empty");
+  if (entries.length > BATCH_MAX) throw new Error(`contacts array exceeds maximum of ${BATCH_MAX}`);
+
+  // Pre-validate: each entry must have contact_id or id
+  const results: BatchItemResult[] = [];
+  let succeeded = 0;
+  let failed = 0;
+
+  // Prepare photo temp files
+  const photoCleanups: (() => void)[] = [];
+  const photoBlocks: PhotoBlock[] = [];
+  for (const entry of entries) {
+    const pb = await preparePhotoBlock("p", entry.photo);
+    photoBlocks.push(pb);
+    photoCleanups.push(pb.cleanup);
+  }
+
+  // Build per-item AppleScript blocks
+  const contactBlocks: string[] = [];
+  const preValidationErrors: (string | null)[] = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const personId = entry.contact_id ?? entry.id;
+
+    if (!personId) {
+      preValidationErrors.push("contact_id (or id) is required for batch update");
+      contactBlocks.push("");
+      continue;
+    }
+    preValidationErrors.push(null);
+
+    // Check ALLOWED_GROUPS membership (will be done inside AppleScript for speed)
+    const sets: string[] = [];
+    const setIfStr = (apProp: string, val?: string) => {
+      if (val !== undefined && val !== "") sets.push(`set ${apProp} of p to ${q(val)}`);
+    };
+
+    setIfStr("first name", entry.first_name);
+    setIfStr("last name", entry.last_name);
+    if (entry.prefix !== undefined) sets.push(`try
+        set title of p to ${q(entry.prefix)}
+      end try`);
+    if (entry.suffix !== undefined) sets.push(`try
+        set suffix of p to ${q(entry.suffix)}
+      end try`);
+    if (entry.nickname !== undefined) sets.push(`try
+        set nickname of p to ${q(entry.nickname)}
+      end try`);
+    setIfStr("organization", entry.organization);
+    if (entry.department !== undefined) sets.push(`try
+        set department of p to ${q(entry.department)}
+      end try`);
+    setIfStr("job title", entry.job_title);
+    if (entry.note !== undefined) sets.push(`set note of p to ${q(entry.note)}`);
+
+    appendChildBlocks(sets, "p", entry, /*isUpdate*/ true);
+    appendBirthdayBlock(sets, "p", entry.birthday);
+
+    const photoScript = photoBlocks[i]!.script;
+
+    // Track updated fields for the response
+    const updatedFields: string[] = [];
+    for (const [k, v] of Object.entries(entry)) {
+      if (k !== "contact_id" && k !== "id" && v !== undefined) updatedFields.push(k);
+    }
+    // Encode updated_fields as a comma-separated string inside the AS result
+    const updatedStr = updatedFields.join(",");
+
+    const block = `
+    -- update ${i}
+    try
+      set p to person id ${q(personId)}
+${sets.map((l) => "      " + l).join("\n")}
+      ${photoScript}
+      set out to out & "ok${F}" & (id of p) & "${F}" & (name of p) & "${F}" & "${updatedStr.replace(/"/g, '\\"')}" & "${BATCH_DELIM}"
+    on error errMsg
+      set out to out & "error${F}" & "${personId.replace(/"/g, '\\"')}" & "${F}" & errMsg & "${BATCH_DELIM}"
+    end try`;
+    contactBlocks.push(block);
+  }
+
+  const liveBlocks = contactBlocks.filter((_, i) => preValidationErrors[i] === null);
+  const script = `
+tell application "Contacts"
+  set out to ""
+${liveBlocks.join("\n")}
+  save
+  return out
+end tell`;
+
+  let rawOutput = "";
+  try {
+    if (liveBlocks.length > 0) {
+      rawOutput = await runAppleScript(script);
+    }
+  } finally {
+    for (const cleanup of photoCleanups) cleanup();
+  }
+
+  const asResults = rawOutput
+    ? rawOutput.split(BATCH_DELIM).filter((s) => s.length > 0)
+    : [];
+
+  let asIdx = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (preValidationErrors[i] !== null) {
+      results.push({ index: i, status: "error", error: preValidationErrors[i]! });
+      failed++;
+      continue;
+    }
+    const asRec = asResults[asIdx++] ?? "";
+    const parts = asRec.split(F);
+    if (parts[0]?.trim() === "ok" && parts[1]) {
+      const id = parts[1].trim();
+      const name = parts[2]?.trim() ?? "";
+      const updatedFields = (parts[3] ?? "").split(",").filter(Boolean);
+      results.push({ index: i, status: "ok", id, name, updated_fields: updatedFields });
+      succeeded++;
+    } else {
+      const id = parts[1]?.trim();
+      results.push({ index: i, status: "error", id, error: parts[2]?.trim() || "Unknown error" });
+      failed++;
+    }
+  }
+
+  return { total: entries.length, succeeded, failed, results };
 }
 
 // ---------- helpers for create/update child collections ----------

@@ -248,6 +248,49 @@ async function main() {
   assert(!upd.updated_fields.includes("note"), "updated_fields excludes untouched");
   await contacts.deleteContact({ id: echoC.id });
 
+  // ----- batch_create_contacts -----
+  console.log("\n[BATCH-C] batch_create_contacts");
+  const batchCreateResult = await contacts.batchCreateContacts([
+    { first_name: `${TAG}Batch1`, last_name: "One", organization: "BatchOrg", phones: [{ label: "mobile", value: "+82 10-0001-0001" }] },
+    { first_name: `${TAG}Batch2`, last_name: "Two", emails: [{ label: "work", value: "batch2@example.com" }], note: "배치\n테스트" },
+    { first_name: `${TAG}Batch3` },  // single name, no last
+    { organization: `${TAG}OrgOnly` }, // org-only
+    {} as any, // should fail: no name or org
+  ]);
+  assert(batchCreateResult.total === 5, `batch total=${batchCreateResult.total}`);
+  assert(batchCreateResult.succeeded === 4, `batch succeeded=${batchCreateResult.succeeded}`);
+  assert(batchCreateResult.failed === 1, `batch failed=${batchCreateResult.failed}`);
+  assert(batchCreateResult.results[0]?.status === "ok", "batch[0] ok");
+  assert(!!batchCreateResult.results[0]?.id, "batch[0] has id");
+  assert(batchCreateResult.results[4]?.status === "error", "batch[4] error (no name/org)");
+  console.log(`  batch create: ${batchCreateResult.succeeded} ok, ${batchCreateResult.failed} err`);
+
+  // ----- batch_update_contacts -----
+  console.log("\n[BATCH-U] batch_update_contacts");
+  const idsToUpdate = batchCreateResult.results.filter((r) => r.status === "ok").map((r) => r.id!);
+  const batchUpdateResult = await contacts.batchUpdateContacts([
+    { contact_id: idsToUpdate[0], job_title: "Batch Manager" },
+    { contact_id: idsToUpdate[1], note: "updated batch note" },
+    { contact_id: "NONEXISTENT:ABPerson" }, // should fail
+  ]);
+  assert(batchUpdateResult.total === 3, `batch-u total=${batchUpdateResult.total}`);
+  assert(batchUpdateResult.succeeded === 2, `batch-u succeeded=${batchUpdateResult.succeeded}`);
+  assert(batchUpdateResult.failed === 1, `batch-u failed=${batchUpdateResult.failed}`);
+  assert(batchUpdateResult.results[0]?.status === "ok", "batch-u[0] ok");
+  assert(batchUpdateResult.results[0]?.updated_fields?.includes("job_title"), "batch-u[0] updated_fields has job_title");
+  assert(batchUpdateResult.results[2]?.status === "error", "batch-u[2] error (nonexistent)");
+  console.log(`  batch update: ${batchUpdateResult.succeeded} ok, ${batchUpdateResult.failed} err`);
+
+  // Verify one of the updates actually stuck
+  const verifyBatch = await contacts.getContact({ id: idsToUpdate[0]! });
+  assert(verifyBatch.job_title === "Batch Manager", `batch-u verify job_title=${verifyBatch.job_title}`);
+
+  // Cleanup batch contacts
+  for (const id of idsToUpdate) {
+    await contacts.deleteContact({ id });
+  }
+  console.log(`  cleaned up ${idsToUpdate.length} batch contacts`);
+
   // ----- DELETE main contact -----
   console.log("\n[9] delete_contact by id");
   const delMsg = await contacts.deleteContact({ id: created.id });

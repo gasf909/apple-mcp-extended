@@ -131,3 +131,39 @@ export interface ListContactsResult {
   limit: number;
   next_offset: number | null;
 }
+
+// ---- Batch schemas (since 0.3.0) ----
+
+// Input entry for batch_create_contacts. Same fields as create_contact.
+// ContactFieldsSchema already has optional first_name/last_name so we
+// just reuse it directly.
+export const BatchCreateEntrySchema = ContactFieldsSchema;
+export type BatchCreateEntry = z.infer<typeof BatchCreateEntrySchema>;
+
+// Input entry for batch_update_contacts. contact_id (or id) is required;
+// name-based matching is not allowed in batch for safety.
+export const BatchUpdateEntrySchema = ContactFieldsSchema.extend({
+  contact_id: z.string().optional().describe("Apple Contacts person id (preferred). Alias for `id`."),
+  id: z.string().optional().describe("Same as contact_id (back-compat)."),
+});
+export type BatchUpdateEntry = z.infer<typeof BatchUpdateEntrySchema>;
+
+// Per-item result
+export interface BatchItemResult {
+  index: number;
+  status: "ok" | "error";
+  id?: string;
+  name?: string;
+  group_added?: string;
+  group_warning?: string;
+  updated_fields?: string[];
+  error?: string;
+}
+
+// Batch response
+export interface BatchResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchItemResult[];
+}

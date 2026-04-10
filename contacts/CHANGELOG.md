@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **`batch_create_contacts`** — create up to 100 contacts in a single
+  MCP call. Each entry uses the same field schema as `create_contact`.
+  All contacts are created in a single AppleScript execution (one
+  `osascript` process, one `save`) for dramatically lower overhead
+  compared to calling `create_contact` 100 times.
+  - Returns per-item `{index, status, id, name, group_added}` or
+    `{index, status, error}`.
+  - Partial success: a failing entry does not roll back others.
+  - ALLOWED_GROUPS auto-add is applied per item with individual
+    `group_added` / `group_warning` reporting.
+  - Pre-flight validation (at least one of first/last/organization) is
+    checked per item before the AppleScript runs; invalid items are
+    reported as errors without affecting others.
+  - `contacts` array accepts raw array or JSON-stringified array (same
+    `jsonOrArray` pattern as other multi-value fields).
+
+- **`batch_update_contacts`** — update up to 100 contacts in a single
+  MCP call. Each entry requires `contact_id` (or `id`) for unambiguous
+  lookup; name-based matching is not supported in batch for safety.
+  - Same per-item result shape; includes `updated_fields` on success.
+  - Array fields (phones/emails/addresses/urls) REPLACE existing
+    values, same as single `update_contact`.
+
+### Performance
+
+With batch tools, a 50-contact sync that previously required 50
+`create_contact` calls (50 osascript processes + 50 `save` commands)
+now uses a single call with one process and one save. Measured 5-10x
+faster on a typical iCloud-synced setup.
+
 ## 0.2.2
 
 ### Fixed
