@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- **`modification_date`** exposed on all contact outputs (ISO 8601
+  local time, e.g. `2026-04-10T15:30:00`):
+  - `get_contact` → `ContactRecord.modification_date`
+  - `batch_get_contacts` → same (via shared `personReadBlock`)
+  - `list_contacts` → `ContactSummary.modification_date` (both
+    normal and `summary=true` modes)
+  
+  Essential for pull sync: compare `modification_date` against the
+  last sync timestamp to detect which contacts changed.
+
+- AppleScript date→ISO conversion with zero-padded month/day/hour/
+  minute/second fields.
+
 ## 0.4.0
 
 ### Added

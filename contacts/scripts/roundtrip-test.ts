@@ -91,6 +91,7 @@ async function main() {
   assert(got.note?.includes("줄1") && got.note?.includes("줄2") && got.note?.includes("줄3"), "note Korean preserved");
   assert(got.note?.includes("\n"), "note has real newline (not literal \\n)");
   assert(got.has_photo === true, "has_photo=true");
+  assert(typeof got.modification_date === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(got.modification_date), `modification_date ISO format: ${got.modification_date}`);
 
   // ----- UPDATE -----
   console.log("\n[3] update_contact: replace phones, change job_title and birthday");
@@ -164,6 +165,13 @@ async function main() {
   assert(typeof page.total === "number" && page.total >= 0, `page.total=${page.total}`);
   assert(page.limit === 2, `page.limit=${page.limit}`);
   assert(page.offset === 0, `page.offset=${page.offset}`);
+  if (page.items.length > 0) {
+    const item0 = page.items[0]!;
+    assert(
+      typeof item0.modification_date === "string" && /^\d{4}/.test(item0.modification_date),
+      `list_contacts item has modification_date: ${item0.modification_date}`
+    );
+  }
   if (page.total >= 3) {
     assert(page.items.length === 2, `items.length=${page.items.length}`);
     assert(page.next_offset === 2, `next_offset=${page.next_offset}`);
@@ -314,6 +322,7 @@ async function main() {
   assert(bg0.contact?.organization === "BGOrg0", `bg[0] org=${bg0.contact?.organization}`);
   assert(bg0.contact?.phones.length === 1, "bg[0] phones count");
   assert(bg0.contact?.note?.includes("줄2"), "bg[0] note newline preserved");
+  assert(typeof bg0.contact?.modification_date === "string" && /^\d{4}/.test(bg0.contact.modification_date), `bg[0] modification_date: ${bg0.contact?.modification_date}`);
   // Include a nonexistent ID
   const bgMixed = await contacts.batchGetContacts([bgIds[0]!, "NONEXISTENT:ABPerson", bgIds[2]!]);
   assert(bgMixed.succeeded === 2, `bg-mixed succeeded=${bgMixed.succeeded}`);

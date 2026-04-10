@@ -112,6 +112,7 @@ export interface ContactRecord {
   birthday: string | null;
   note: string | null;
   has_photo: boolean;
+  modification_date: string | null;
 }
 
 // Output of list_contacts (lightweight)
@@ -121,6 +122,7 @@ export interface ContactSummary {
   organization: string | null;
   primary_phone: string | null;
   primary_email: string | null;
+  modification_date: string | null;
 }
 
 // Output of list_contacts (paginated wrapper, since 0.2.0)

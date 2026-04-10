@@ -110,11 +110,32 @@ export async function listContacts(
   // summary=true: emit only name + id per record (≈30B each) so very large
   // groups can be cheaply enumerated.
   const scope = group ? `people of group ${q(group)}` : "people";
+  // modification_date is included in both summary and full modes —
+  // it's lightweight and essential for pull sync to detect changes.
+  const modDateReader = `
+    set modDateStr to ""
+    try
+      set md to modification date of p
+      if md is not missing value then
+        set yr to year of md
+        set mo to month of md as integer
+        set dy to day of md
+        set hr to hours of md
+        set mn to minutes of md
+        set sc to seconds of md
+        set moS to text -2 thru -1 of ("0" & mo)
+        set dyS to text -2 thru -1 of ("0" & dy)
+        set hrS to text -2 thru -1 of ("0" & hr)
+        set mnS to text -2 thru -1 of ("0" & mn)
+        set scS to text -2 thru -1 of ("0" & sc)
+        set modDateStr to (yr as string) & "-" & moS & "-" & dyS & "T" & hrS & ":" & mnS & ":" & scS
+      end if
+    end try`;
   const perRecordScript = summary
-    ? `set rec to theName & "${F}" & theId`
-    : `set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail`;
+    ? `set rec to theName & "${F}" & theId & "${F}" & modDateStr`
+    : `set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail & "${F}" & modDateStr`;
   const perRecordReaders = summary
-    ? ""
+    ? modDateReader
     : `
     set theOrg to ""
     try
@@ -134,7 +155,7 @@ export async function listContacts(
         set tmp to value of (item 1 of emails of p)
         if tmp is not missing value then set theEmail to tmp as text
       end if
-    end try`;
+    end try${modDateReader}`;
   const script = `
 tell application "Contacts"
   set theGroup to ${scope}
@@ -171,12 +192,16 @@ end tell`;
     .filter((r) => r.length > 0)
     .map((rec) => {
       const parts = rec.split(F);
+      // Summary mode: name|id|modDate (3 fields)
+      // Full mode:    name|id|org|phone|email|modDate (6 fields)
+      const modIdx = summary ? 2 : 5;
       return {
         name: (parts[0] ?? "").trim(),
         id: (parts[1] ?? "").trim(),
         organization: summary ? null : cleanField(parts[2]) || null,
         primary_phone: summary ? null : cleanField(parts[3]) || null,
         primary_email: summary ? null : cleanField(parts[4]) || null,
+        modification_date: cleanField(parts[modIdx]) || null,
       };
     });
 
@@ -240,6 +265,7 @@ end tell`;
       organization: null,
       primary_phone: null,
       primary_email: null,
+      modification_date: null,
     };
   });
 }
@@ -564,7 +590,26 @@ tell application "Contacts"
     if img is not missing value then set hasImg to "1"
   end try
 
-  return theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg
+  set modDateStr to ""
+  try
+    set md to modification date of p
+    if md is not missing value then
+      set yr to year of md
+      set mo to month of md as integer
+      set dy to day of md
+      set hr to hours of md
+      set mn to minutes of md
+      set sc to seconds of md
+      set moS to text -2 thru -1 of ("0" & mo)
+      set dyS to text -2 thru -1 of ("0" & dy)
+      set hrS to text -2 thru -1 of ("0" & hr)
+      set mnS to text -2 thru -1 of ("0" & mn)
+      set scS to text -2 thru -1 of ("0" & sc)
+      set modDateStr to (yr as string) & "-" & moS & "-" & dyS & "T" & hrS & ":" & mnS & ":" & scS
+    end if
+  end try
+
+  return theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg & "${F}" & modDateStr
 end tell`;
   const raw = await runAppleScript(script);
   return parseContactRecord(raw);
@@ -598,6 +643,7 @@ function parseContactRecord(raw: string): ContactRecord {
     birthday: parseBirthday(p[14] ?? ""),
     note: orNull(15),
     has_photo: get(16) === "1",
+    modification_date: orNull(17),
   };
 }
 
@@ -1322,7 +1368,27 @@ function personReadBlock(): string {
     if img is not missing value then set hasImg to "1"
   end try
 
-  set contactRec to theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg`;
+  set modDateStr to ""
+  try
+    set md to modification date of p
+    if md is not missing value then
+      set yr to year of md
+      set mo to month of md as integer
+      set dy to day of md
+      set hr to hours of md
+      set mn to minutes of md
+      set sc to seconds of md
+      -- zero-pad each component
+      set moS to text -2 thru -1 of ("0" & mo)
+      set dyS to text -2 thru -1 of ("0" & dy)
+      set hrS to text -2 thru -1 of ("0" & hr)
+      set mnS to text -2 thru -1 of ("0" & mn)
+      set scS to text -2 thru -1 of ("0" & sc)
+      set modDateStr to (yr as string) & "-" & moS & "-" & dyS & "T" & hrS & ":" & mnS & ":" & scS
+    end if
+  end try
+
+  set contactRec to theName & "${F}" & (id of p) & "${F}" & thePrefix & "${F}" & theFirst & "${F}" & theLast & "${F}" & theSuffix & "${F}" & theNick & "${F}" & theOrg & "${F}" & theDept & "${F}" & theTitle & "${F}" & phStr & "${F}" & emStr & "${F}" & adStr & "${F}" & urStr & "${F}" & bdStr & "${F}" & ntStr & "${F}" & hasImg & "${F}" & modDateStr`;
 }
 
 export async function batchGetContacts(contactIds: string[]): Promise<BatchGetResult> {
