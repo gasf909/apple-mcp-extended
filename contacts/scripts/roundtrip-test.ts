@@ -365,15 +365,21 @@ async function main() {
     console.log(`  (skipped: only ${perfPage.items.length} contacts available, need >=10)`);
   }
 
-  // ----- 0.5.0: summary="minimal" -----
+  // ----- 0.5.0/0.5.1: summary="minimal" -----
   console.log("\n[MIN] list_contacts summary=minimal");
   const minPage = await contacts.listContacts(undefined, { limit: 5, offset: 0, summary: "minimal" });
   assert(Array.isArray(minPage.items), "minimal: items is array");
   if (minPage.items.length > 0) {
-    const mi = minPage.items[0]!;
+    const mi = minPage.items[0]! as any;
     assert(typeof mi.id === "string" && typeof mi.name === "string", "minimal: has id+name");
-    assert(mi.organization === null && mi.primary_phone === null && mi.primary_email === null, "minimal: no org/phone/email");
+    // Key absence check: organization/primary_phone/primary_email must NOT be present at all
+    assert(!("organization" in mi), `minimal: organization key absent (keys: ${Object.keys(mi).join(",")})`);
+    assert(!("primary_phone" in mi), "minimal: primary_phone key absent");
+    assert(!("primary_email" in mi), "minimal: primary_email key absent");
     assert(typeof mi.modification_date === "string", `minimal: has modification_date: ${mi.modification_date}`);
+    // Size check
+    const itemJson = JSON.stringify(mi);
+    assert(itemJson.length < 150, `minimal: item JSON < 150B (got ${itemJson.length}B: ${itemJson.slice(0, 80)}...)`);
   }
 
   // ----- 0.5.0: changed_since -----
@@ -398,7 +404,7 @@ async function main() {
   });
   assert(comboResult.total > 0, `combo: total=${comboResult.total}`);
   if (comboResult.items.length > 0) {
-    assert(comboResult.items[0]!.organization === null, "combo: minimal org=null");
+    assert(!("organization" in comboResult.items[0]!), "combo: minimal org key absent");
     assert(typeof comboResult.items[0]!.modification_date === "string", "combo: has modDate");
   }
 

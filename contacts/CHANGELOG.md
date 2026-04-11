@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- **`summary="minimal"` now omits keys entirely instead of filling
+  them with `null`.** Previously the response included
+  `organization: null, primary_phone: null, primary_email: null` —
+  wasting ~90 bytes/item and defeating the minimal mode's purpose.
+  Now returns only `{id, name, modification_date}` (~50-80B/item).
+
+- TypeScript types split: `ContactSummaryFull` (6 fields) vs
+  `ContactSummaryMinimal` (3 fields). `ContactSummary` is a union
+  of both. Callers can narrow via `"organization" in item`.
+
 ## 0.5.0
 
 Token-efficient pull sync: two new options on `list_contacts` that

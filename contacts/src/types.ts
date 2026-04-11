@@ -115,8 +115,8 @@ export interface ContactRecord {
   modification_date: string | null;
 }
 
-// Output of list_contacts (lightweight)
-export interface ContactSummary {
+// Output of list_contacts — two shapes depending on summary mode.
+export interface ContactSummaryFull {
   id: string;
   name: string;
   organization: string | null;
@@ -124,6 +124,14 @@ export interface ContactSummary {
   primary_email: string | null;
   modification_date: string | null;
 }
+
+export interface ContactSummaryMinimal {
+  id: string;
+  name: string;
+  modification_date: string | null;
+}
+
+export type ContactSummary = ContactSummaryFull | ContactSummaryMinimal;
 
 // Summary mode enum for list_contacts (since 0.5.0).
 // - false/"full": all summary fields (id, name, org, phone, email, modification_date)

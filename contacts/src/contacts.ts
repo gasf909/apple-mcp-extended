@@ -267,16 +267,22 @@ end tell`;
     .filter((r) => r.length > 0)
     .map((rec) => {
       const parts = rec.split(F);
-      // Minimal mode: name|id|modDate (3 fields, modIdx=2)
-      // Full mode:    name|id|org|phone|email|modDate (6 fields, modIdx=5)
-      const modIdx = isMinimal ? 2 : 5;
+      if (isMinimal) {
+        // Minimal: name|id|modDate (3 fields) — keys omitted, not null
+        return {
+          id: (parts[1] ?? "").trim(),
+          name: (parts[0] ?? "").trim(),
+          modification_date: cleanField(parts[2]) || null,
+        };
+      }
+      // Full: name|id|org|phone|email|modDate (6 fields)
       return {
-        name: (parts[0] ?? "").trim(),
         id: (parts[1] ?? "").trim(),
-        organization: isMinimal ? null : cleanField(parts[2]) || null,
-        primary_phone: isMinimal ? null : cleanField(parts[3]) || null,
-        primary_email: isMinimal ? null : cleanField(parts[4]) || null,
-        modification_date: cleanField(parts[modIdx]) || null,
+        name: (parts[0] ?? "").trim(),
+        organization: cleanField(parts[2]) || null,
+        primary_phone: cleanField(parts[3]) || null,
+        primary_email: cleanField(parts[4]) || null,
+        modification_date: cleanField(parts[5]) || null,
       };
     });
 
