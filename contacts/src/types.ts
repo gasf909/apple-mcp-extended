@@ -125,6 +125,12 @@ export interface ContactSummary {
   modification_date: string | null;
 }
 
+// Summary mode enum for list_contacts (since 0.5.0).
+// - false/"full": all summary fields (id, name, org, phone, email, modification_date)
+// - true: same as "full" (back-compat alias)
+// - "minimal": id + name + modification_date only (~50B/item)
+export type SummaryMode = boolean | "full" | "minimal";
+
 // Output of list_contacts (paginated wrapper, since 0.2.0)
 export interface ListContactsResult {
   items: ContactSummary[];

@@ -1,6 +1,6 @@
 {
   "name": "@gasf030304/apple-contacts-extended",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Extended MCP server for Apple Contacts on macOS (fork of @griches/apple-contacts-mcp) with full field support, id-based safe matching, and ALLOWED_GROUPS safety",
   "type": "module",
   "main": "dist/index.js",

@@ -20,6 +20,7 @@ import {
   ContactRecord,
   ContactSummary,
   ListContactsResult,
+  SummaryMode,
   BatchCreateEntry,
   BatchUpdateEntry,
   BatchItemResult,
@@ -96,22 +97,22 @@ const MAX_LIST_LIMIT = 500;
 
 export async function listContacts(
   group: string | undefined,
-  opts: { limit?: number; offset?: number; summary?: boolean } = {}
+  opts: { limit?: number; offset?: number; summary?: SummaryMode; changed_since?: string } = {}
 ): Promise<ListContactsResult> {
   assertGroupProvided(group);
   const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, opts.limit ?? DEFAULT_LIST_LIMIT));
   const offset = Math.max(0, opts.offset ?? 0);
-  const summary = !!opts.summary;
+  // Normalize summary mode: false/undefined → "full", true → "full" (back-compat), "minimal" → "minimal"
+  const mode: "full" | "minimal" =
+    opts.summary === "minimal" ? "minimal" : "full";
+  const isMinimal = mode === "minimal";
+  const changedSince = opts.changed_since?.trim() ?? "";
 
-  // We page in AppleScript so the script never returns more than `limit`
-  // contacts. The total count is included as a header so callers can
-  // paginate without an extra round-trip.
-  //
-  // summary=true: emit only name + id per record (≈30B each) so very large
-  // groups can be cheaply enumerated.
   const scope = group ? `people of group ${q(group)}` : "people";
-  // modification_date is included in both summary and full modes —
-  // it's lightweight and essential for pull sync to detect changes.
+
+  // --- Build per-person AppleScript readers ---
+
+  // modDate reader (always included — needed for filtering AND output)
   const modDateReader = `
     set modDateStr to ""
     try
@@ -131,11 +132,10 @@ export async function listContacts(
         set modDateStr to (yr as string) & "-" & moS & "-" & dyS & "T" & hrS & ":" & mnS & ":" & scS
       end if
     end try`;
-  const perRecordScript = summary
-    ? `set rec to theName & "${F}" & theId & "${F}" & modDateStr`
-    : `set rec to theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail & "${F}" & modDateStr`;
-  const perRecordReaders = summary
-    ? modDateReader
+
+  // Extra field readers for non-minimal modes
+  const extraReaders = isMinimal
+    ? ""
     : `
     set theOrg to ""
     try
@@ -155,8 +155,82 @@ export async function listContacts(
         set tmp to value of (item 1 of emails of p)
         if tmp is not missing value then set theEmail to tmp as text
       end if
-    end try${modDateReader}`;
-  const script = `
+    end try`;
+
+  // Record assembly
+  const recExpr = isMinimal
+    ? `theName & "${F}" & theId & "${F}" & modDateStr`
+    : `theName & "${F}" & theId & "${F}" & theOrg & "${F}" & thePhone & "${F}" & theEmail & "${F}" & modDateStr`;
+
+  // --- changed_since filter setup ---
+  // When set, we iterate ALL members, read their modification date, and
+  // compare. Only matching records are emitted; total = filtered count.
+  // Pagination (offset/limit) applies to the filtered set.
+  //
+  // Without changed_since, we use the fast index-based pagination (no
+  // date comparison, just items startIdx..endIdx).
+
+  let script: string;
+
+  if (changedSince) {
+    // Validate the ISO string minimally
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(changedSince)) {
+      throw new Error(
+        `Invalid changed_since format: "${changedSince}". Expected ISO 8601 datetime, e.g. "2026-04-10T15:30:00".`
+      );
+    }
+    // AppleScript date comparison: parse the threshold into an AS date,
+    // then compare each person's modification date. We strip any
+    // timezone offset from the input since AS dates are local.
+    const localPart = changedSince.replace(/[+-]\d{2}:\d{2}$/, "").replace(/Z$/, "");
+    // Parse components for AS date construction
+    const dm = localPart.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):?(\d{2})?$/);
+    if (!dm) {
+      throw new Error(
+        `Cannot parse changed_since: "${changedSince}". Expected YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS.`
+      );
+    }
+    const [, csY, csM, csD, csH, csMn, csS] = dm;
+
+    script = `
+tell application "Contacts"
+  -- Build threshold date
+  set threshDate to current date
+  set day of threshDate to 1
+  set year of threshDate to ${csY}
+  set month of threshDate to ${parseInt(csM!, 10)}
+  set day of threshDate to ${parseInt(csD!, 10)}
+  set hours of threshDate to ${parseInt(csH!, 10)}
+  set minutes of threshDate to ${parseInt(csMn!, 10)}
+  set seconds of threshDate to ${parseInt(csS ?? "0", 10)}
+
+  set theGroup to ${scope}
+  set matchCount to 0
+  set emitted to 0
+  set out to ""
+  repeat with p in theGroup
+    -- Read modification date first; skip if older than threshold
+    set md to missing value
+    try
+      set md to modification date of p
+    end try
+    if md is not missing value and md >= threshDate then
+      set matchCount to matchCount + 1
+      -- Apply offset/limit to the filtered set
+      if matchCount > ${offset} and emitted < ${limit} then
+        set theName to name of p
+        set theId to id of p${modDateReader}${extraReaders}
+        set rec to ${recExpr}
+        set out to out & "${R}" & rec
+        set emitted to emitted + 1
+      end if
+    end if
+  end repeat
+  return "TOTAL=" & (matchCount as string) & out
+end tell`;
+  } else {
+    // No changed_since — fast index-based pagination (original path)
+    script = `
 tell application "Contacts"
   set theGroup to ${scope}
   set total to count of theGroup
@@ -168,14 +242,16 @@ tell application "Contacts"
   repeat with i from startIdx to endIdx
     set p to item i of theGroup
     set theName to name of p
-    set theId to id of p${perRecordReaders}
-    ${perRecordScript}
+    set theId to id of p${modDateReader}${extraReaders}
+    set rec to ${recExpr}
     set out to out & "${R}" & rec
   end repeat
   return out
 end tell`;
+  }
+
   const raw = await runAppleScript(script);
-  // Header line: "TOTAL=N" then records joined by R.
+  // Header: "TOTAL=N" then records joined by R.
   const [headerAndFirst, ...rest] = raw.split(R);
   const headerMatch = (headerAndFirst ?? "").match(/^TOTAL=(\d+)$/);
   let total = 0;
@@ -184,7 +260,6 @@ end tell`;
     total = parseInt(headerMatch[1]!, 10);
     recordSlice = rest;
   } else {
-    // Defensive: header missing → treat the whole payload as records.
     recordSlice = headerAndFirst ? [headerAndFirst, ...rest] : [];
   }
 
@@ -192,15 +267,15 @@ end tell`;
     .filter((r) => r.length > 0)
     .map((rec) => {
       const parts = rec.split(F);
-      // Summary mode: name|id|modDate (3 fields)
-      // Full mode:    name|id|org|phone|email|modDate (6 fields)
-      const modIdx = summary ? 2 : 5;
+      // Minimal mode: name|id|modDate (3 fields, modIdx=2)
+      // Full mode:    name|id|org|phone|email|modDate (6 fields, modIdx=5)
+      const modIdx = isMinimal ? 2 : 5;
       return {
         name: (parts[0] ?? "").trim(),
         id: (parts[1] ?? "").trim(),
-        organization: summary ? null : cleanField(parts[2]) || null,
-        primary_phone: summary ? null : cleanField(parts[3]) || null,
-        primary_email: summary ? null : cleanField(parts[4]) || null,
+        organization: isMinimal ? null : cleanField(parts[2]) || null,
+        primary_phone: isMinimal ? null : cleanField(parts[3]) || null,
+        primary_email: isMinimal ? null : cleanField(parts[4]) || null,
         modification_date: cleanField(parts[modIdx]) || null,
       };
     });

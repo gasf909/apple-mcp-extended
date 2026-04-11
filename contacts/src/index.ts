@@ -43,24 +43,40 @@ server.registerTool(
   "list_contacts",
   {
     description:
-      "List contacts in a group, paginated. When ALLOWED_GROUPS env var is set, the group argument is required and must be one of the allowed groups. Returns {items, total, offset, limit, next_offset}. Default limit=50, max=500. Set summary=true to return id+name only (organization/phone/email omitted) for cheaper enumeration of large groups.",
+      "List contacts in a group, paginated. Returns {items, total, offset, limit, next_offset}. " +
+      "Default limit=50, max=500. " +
+      "summary modes: false (default) = id/name/org/phone/email/modification_date; " +
+      "true or \"full\" = same; \"minimal\" = id/name/modification_date only (~50B/item). " +
+      "changed_since: ISO 8601 datetime to filter to contacts modified after that time (inclusive). " +
+      "When ALLOWED_GROUPS is set, group is required.",
     inputSchema: {
       group: z.string().optional().describe("Group name to filter by"),
-      // z.coerce.* tolerates clients that serialize numeric/boolean tool
-      // args as strings (same root cause as the array→JSON-string fix
-      // in 0.2.0).
       limit: z.coerce.number().int().positive().max(500).optional().describe("Page size (default 50, max 500)"),
       offset: z.coerce.number().int().nonnegative().optional().describe("Skip the first N matches (default 0)"),
-      // Note: z.coerce.boolean treats any non-empty string as true
-      // (including "false"), so we coerce manually here.
       summary: z
-        .union([z.boolean(), z.enum(["true", "false", "1", "0"]).transform((s) => s === "true" || s === "1")])
+        .union([
+          z.boolean(),
+          z.enum(["true", "false", "1", "0", "full", "minimal"]).transform((s) => {
+            if (s === "minimal") return "minimal" as const;
+            if (s === "full") return true;
+            return s === "true" || s === "1";
+          }),
+        ])
         .optional()
-        .describe("When true, items contain only id and name (~30B each) — ~3x smaller payload"),
+        .describe('false (default) or "full": all summary fields. "minimal": id+name+modification_date only (~50B/item).'),
+      changed_since: z.string().optional().describe(
+        "ISO 8601 datetime (e.g. 2026-04-10T15:30:00). Only contacts modified at or after this time are returned. " +
+        "total reflects the filtered count. Timezone offset is stripped (compared against system-local modification date)."
+      ),
     },
   },
-  async ({ group, limit, offset, summary }) => {
-    try { return ok(await contacts.listContacts(group, { limit, offset, summary })); } catch (e) { return err(e); }
+  async ({ group, limit, offset, summary, changed_since }) => {
+    try {
+      // Normalize summary: boolean true → keep as true (back-compat, treated as "full"),
+      // "minimal" → pass through
+      const summaryMode = summary === "minimal" ? "minimal" : (summary ? true : undefined);
+      return ok(await contacts.listContacts(group, { limit, offset, summary: summaryMode, changed_since }));
+    } catch (e) { return err(e); }
   }
 );
 

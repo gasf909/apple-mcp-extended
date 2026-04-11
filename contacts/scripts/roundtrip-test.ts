@@ -233,14 +233,16 @@ async function main() {
   assert(!!orgOnly.id, "organization-only create ok");
   await contacts.deleteContact({ id: orgOnly.id });
 
-  // ----- 0.2.1: list_contacts summary mode (P5) -----
-  console.log("\n[P5] list_contacts summary mode");
+  // ----- 0.2.1/0.5.0: list_contacts summary mode (P5) -----
+  // summary=true is now an alias for "full" mode (all summary fields).
+  // Use summary="minimal" for id+name+modification_date only.
+  console.log("\n[P5] list_contacts summary=true (full mode)");
   const sum = await contacts.listContacts(undefined, { limit: 3, offset: 0, summary: true });
   assert(sum.items.length <= 3, `summary items.length=${sum.items.length}`);
   if (sum.items.length > 0) {
     const it = sum.items[0]!;
     assert(typeof it.id === "string" && typeof it.name === "string", "summary has id+name");
-    assert(it.organization === null && it.primary_phone === null && it.primary_email === null, "summary omits org/phone/email");
+    assert(typeof it.modification_date === "string", "summary has modification_date");
   }
 
   // ----- 0.2.1: updated_fields echo (P6) -----
@@ -361,6 +363,94 @@ async function main() {
     assert(perfResult.succeeded === perfIds.length, `perf all succeeded`);
   } else {
     console.log(`  (skipped: only ${perfPage.items.length} contacts available, need >=10)`);
+  }
+
+  // ----- 0.5.0: summary="minimal" -----
+  console.log("\n[MIN] list_contacts summary=minimal");
+  const minPage = await contacts.listContacts(undefined, { limit: 5, offset: 0, summary: "minimal" });
+  assert(Array.isArray(minPage.items), "minimal: items is array");
+  if (minPage.items.length > 0) {
+    const mi = minPage.items[0]!;
+    assert(typeof mi.id === "string" && typeof mi.name === "string", "minimal: has id+name");
+    assert(mi.organization === null && mi.primary_phone === null && mi.primary_email === null, "minimal: no org/phone/email");
+    assert(typeof mi.modification_date === "string", `minimal: has modification_date: ${mi.modification_date}`);
+  }
+
+  // ----- 0.5.0: changed_since -----
+  console.log("\n[CS] list_contacts changed_since");
+  // Future date → 0 results
+  const futureResult = await contacts.listContacts(undefined, {
+    limit: 10, changed_since: "2099-12-31T23:59:59",
+  });
+  assert(futureResult.total === 0, `changed_since future: total=${futureResult.total}`);
+  assert(futureResult.items.length === 0, "changed_since future: empty items");
+
+  // Very old date → should return same as no filter
+  const oldResult = await contacts.listContacts(undefined, {
+    limit: 5, changed_since: "2000-01-01T00:00:00",
+  });
+  assert(oldResult.total > 0, `changed_since old: total=${oldResult.total}`);
+  assert(oldResult.items.length <= 5, "changed_since old: limit respected");
+
+  // changed_since + minimal combo
+  const comboResult = await contacts.listContacts(undefined, {
+    limit: 500, summary: "minimal", changed_since: "2000-01-01T00:00:00",
+  });
+  assert(comboResult.total > 0, `combo: total=${comboResult.total}`);
+  if (comboResult.items.length > 0) {
+    assert(comboResult.items[0]!.organization === null, "combo: minimal org=null");
+    assert(typeof comboResult.items[0]!.modification_date === "string", "combo: has modDate");
+  }
+
+  // Invalid changed_since → error
+  let csErrOk = false;
+  try {
+    await contacts.listContacts(undefined, { changed_since: "not-a-date" });
+  } catch (e) {
+    csErrOk = (e as Error).message.includes("Invalid changed_since");
+  }
+  assert(csErrOk, "invalid changed_since throws clear error");
+
+  // ----- 0.5.0: performance benchmarks -----
+  console.log("\n[PERF-LIST] list_contacts performance comparison");
+  const perfGroup = undefined; // all contacts
+  const benchmarks: { label: string; elapsed: number; total: number; size: number }[] = [];
+
+  // Full mode, limit 500
+  {
+    const t0 = Date.now();
+    const r = await contacts.listContacts(perfGroup, { limit: 500 });
+    const elapsed = Date.now() - t0;
+    const size = JSON.stringify(r).length;
+    benchmarks.push({ label: "full (limit=500)", elapsed, total: r.total, size });
+  }
+  // summary=true (same as full in current impl)
+  {
+    const t0 = Date.now();
+    const r = await contacts.listContacts(perfGroup, { limit: 500, summary: true });
+    const elapsed = Date.now() - t0;
+    const size = JSON.stringify(r).length;
+    benchmarks.push({ label: "summary=true (limit=500)", elapsed, total: r.total, size });
+  }
+  // summary=minimal, limit 500
+  {
+    const t0 = Date.now();
+    const r = await contacts.listContacts(perfGroup, { limit: 500, summary: "minimal" });
+    const elapsed = Date.now() - t0;
+    const size = JSON.stringify(r).length;
+    benchmarks.push({ label: 'summary="minimal" (limit=500)', elapsed, total: r.total, size });
+  }
+  // changed_since=1h ago + minimal
+  {
+    const oneHourAgo = new Date(Date.now() - 3600_000).toISOString().replace(/\.\d+Z$/, "");
+    const t0 = Date.now();
+    const r = await contacts.listContacts(perfGroup, { limit: 500, summary: "minimal", changed_since: oneHourAgo });
+    const elapsed = Date.now() - t0;
+    const size = JSON.stringify(r).length;
+    benchmarks.push({ label: `changed_since=1h ago + minimal`, elapsed, total: r.total, size });
+  }
+  for (const b of benchmarks) {
+    console.log(`  ${b.label}: ${b.elapsed}ms, total=${b.total}, response=${(b.size / 1024).toFixed(1)}KB`);
   }
 
   // ----- DELETE main contact -----

@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.0
+
+Token-efficient pull sync: two new options on `list_contacts` that
+together reduce response size from ~100KB to ~0.3KB for incremental
+sync scenarios.
+
+### Added
+
+- **`changed_since` parameter** on `list_contacts`. Accepts an ISO
+  8601 datetime string (e.g. `"2026-04-10T15:30:00"`). Only contacts
+  whose `modification date` is at or after this threshold are
+  returned. Filtering is done inside AppleScript (unchanged contacts
+  are never serialized). `total` reflects the filtered count.
+  Combinable with `summary`, `limit`, and `offset`. Timezone offset
+  in the input string is stripped (compared against system-local
+  modification date).
+
+- **`summary="minimal"` mode** on `list_contacts`. Returns only
+  `{id, name, modification_date}` per item (~50 bytes each). Skips
+  org/phone/email AppleScript reads entirely for a ~3× speed boost.
+  - `summary=false` or omitted → full summary (all fields, unchanged)
+  - `summary=true` or `"full"` → same as false (back-compat alias)
+  - `summary="minimal"` → id + name + modification_date only
+
+### Performance (1406 contacts, iCloud-synced, macOS Sequoia)
+
+| Mode | Time | Response |
+|---|---|---|
+| full (limit=500) | 238s | 99.8KB |
+| summary=true (limit=500) | 238s | 99.8KB |
+| summary="minimal" (limit=500) | 79s | 86.5KB |
+| changed_since=1h ago + minimal | 73s | 0.3KB |
+
+The last row — `changed_since` + `minimal` — is the recommended pull
+sync pattern: enumerate only what changed since the last sync, with
+the smallest possible payload.
+
+### Changed
+
+- `summary=true` is now an alias for `"full"` (was previously
+  identical to the old "omit org/phone/email" behavior, but the
+  distinction was confusing and the size difference was negligible).
+  Use `"minimal"` for the lightweight format.
+
 ## 0.4.1
 
 ### Added
