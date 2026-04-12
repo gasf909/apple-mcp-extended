@@ -6,8 +6,23 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 import * as contacts from "./contacts.js";
 import { ContactFieldsSchema, BatchCreateEntrySchema, BatchUpdateEntrySchema, jsonOrArray } from "./types.js";
+
+function writeOutputFile(path: string, data: unknown): void {
+  if (!path.startsWith("/")) {
+    throw new Error(`output_file must be an absolute path (starts with /). Got: "${path}"`);
+  }
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(data, null, 2), "utf-8");
+  } catch (e) {
+    throw new Error(`Failed to write output_file "${path}": ${(e as Error).message}`);
+  }
+}
 
 // Reusable helper: accept raw string[] or JSON-stringified string[]
 const StringArrayOrJson = jsonOrArray(z.string());
@@ -68,14 +83,20 @@ server.registerTool(
         "ISO 8601 datetime (e.g. 2026-04-10T15:30:00). Only contacts modified at or after this time are returned. " +
         "total reflects the filtered count. Timezone offset is stripped (compared against system-local modification date)."
       ),
+      output_file: z.string().optional().describe(
+        "Absolute file path. When set, full response is written to this file as JSON and only a summary is returned in the MCP response."
+      ),
     },
   },
-  async ({ group, limit, offset, summary, changed_since }) => {
+  async ({ group, limit, offset, summary, changed_since, output_file }) => {
     try {
-      // Normalize summary: boolean true → keep as true (back-compat, treated as "full"),
-      // "minimal" → pass through
       const summaryMode = summary === "minimal" ? "minimal" : (summary ? true : undefined);
-      return ok(await contacts.listContacts(group, { limit, offset, summary: summaryMode, changed_since }));
+      const result = await contacts.listContacts(group, { limit, offset, summary: summaryMode, changed_since });
+      if (output_file) {
+        writeOutputFile(output_file, result);
+        return ok({ saved_to: output_file, total: result.total, items_count: result.items.length, offset: result.offset, limit: result.limit, next_offset: result.next_offset });
+      }
+      return ok(result);
     } catch (e) { return err(e); }
   }
 );
@@ -218,16 +239,24 @@ server.registerTool(
   "batch_get_contacts",
   {
     description:
-      "Get full details of multiple contacts in one call (max 500). Returns the same ContactRecord as get_contact for each ID. " +
+      "Get full details of multiple contacts in one call (max 250). Returns the same ContactRecord as get_contact for each ID. " +
       "Read-only; no ALLOWED_GROUPS restriction. Partial success: not-found IDs are reported as errors.",
     inputSchema: {
       contact_ids: StringArrayOrJson
-        .describe("Array of Apple Contacts person IDs (from list_contacts). 1-500 items. Accepts array or JSON-stringified array."),
+        .describe("Array of Apple Contacts person IDs (from list_contacts). 1-250 items. Accepts array or JSON-stringified array."),
+      output_file: z.string().optional().describe(
+        "Absolute file path. When set, full response is written to this file as JSON and only a summary is returned in the MCP response."
+      ),
     },
   },
-  async ({ contact_ids }) => {
+  async ({ contact_ids, output_file }) => {
     try {
-      return ok(await contacts.batchGetContacts(contact_ids as string[]));
+      const result = await contacts.batchGetContacts(contact_ids as string[]);
+      if (output_file) {
+        writeOutputFile(output_file, result);
+        return ok({ saved_to: output_file, total: result.total, succeeded: result.succeeded, failed: result.failed });
+      }
+      return ok(result);
     } catch (e) { return err(e); }
   }
 );

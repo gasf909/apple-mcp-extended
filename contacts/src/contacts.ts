@@ -830,9 +830,9 @@ export async function createContact(
 
   const extras: string[] = [];
   appendChildBlocks(extras, "newPerson", fields, /*isUpdate*/ false);
-  appendBirthdayBlock(extras, "newPerson", fields.birthday);
+  appendBirthdayBlock(extras, "newPerson", fields.birthday ?? undefined);
 
-  const photoSetup = await preparePhotoBlock("newPerson", fields.photo);
+  const photoSetup = await preparePhotoBlock("newPerson", fields.photo ?? undefined);
 
   // Step 1 — create the person and save. We do NOT bundle the
   // add-to-group step into this script: cross-account adds (e.g. person
@@ -901,40 +901,78 @@ export async function updateContact(
 ): Promise<{ id: string; name: string; updated_fields: string[] }> {
   const personId = await resolvePersonId(idArg);
 
-  // Track which fields the caller asked to update so the response can
-  // echo them back — saves callers an extra get_contact roundtrip.
+  const sets: string[] = [];
+  // Track fields that actually generate a `set` statement.
   const updated: string[] = [];
-  for (const [k, v] of Object.entries(fields)) {
-    if (v !== undefined) updated.push(k);
+
+  // Nullable semantics (0.6.0):
+  //   null → explicitly clear (set to "")
+  //   undefined → no change
+  //   "" → no change (back-compat)
+  //   "value" → set to value
+  const setStr = (fieldName: string, apProp: string, val?: string | null) => {
+    if (val === null) {
+      sets.push(`set ${apProp} of p to ""`);
+      updated.push(fieldName);
+    } else if (val !== undefined && val !== "") {
+      sets.push(`set ${apProp} of p to ${q(val)}`);
+      updated.push(fieldName);
+    }
+  };
+  const setStrTry = (fieldName: string, apProp: string, val?: string | null) => {
+    if (val === null) {
+      sets.push(`try\n    set ${apProp} of p to ""\n  end try`);
+      updated.push(fieldName);
+    } else if (val !== undefined && val !== "") {
+      sets.push(`try\n    set ${apProp} of p to ${q(val)}\n  end try`);
+      updated.push(fieldName);
+    }
+  };
+
+  setStr("first_name", "first name", fields.first_name);
+  setStr("last_name", "last name", fields.last_name);
+  setStrTry("prefix", "title", fields.prefix);
+  setStrTry("suffix", "suffix", fields.suffix);
+  setStrTry("nickname", "nickname", fields.nickname);
+  setStr("organization", "organization", fields.organization);
+  setStrTry("department", "department", fields.department);
+  setStr("job_title", "job title", fields.job_title);
+  if (fields.note === null) {
+    sets.push(`set note of p to ""`);
+    updated.push("note");
+  } else if (fields.note !== undefined) {
+    sets.push(`set note of p to ${q(fields.note)}`);
+    updated.push("note");
   }
 
-  const sets: string[] = [];
-  const setIfStr = (apProp: string, val?: string) => {
-    if (val !== undefined && val !== "") sets.push(`set ${apProp} of p to ${q(val)}`);
-  };
-  // Note: empty string is treated as "leave alone"; to clear a field user would set to a single space.
-  setIfStr("first name", fields.first_name);
-  setIfStr("last name", fields.last_name);
-  if (fields.prefix !== undefined) sets.push(`try
-    set title of p to ${q(fields.prefix)}
-  end try`);
-  if (fields.suffix !== undefined) sets.push(`try
-    set suffix of p to ${q(fields.suffix)}
-  end try`);
-  if (fields.nickname !== undefined) sets.push(`try
-    set nickname of p to ${q(fields.nickname)}
-  end try`);
-  setIfStr("organization", fields.organization);
-  if (fields.department !== undefined) sets.push(`try
-    set department of p to ${q(fields.department)}
-  end try`);
-  setIfStr("job title", fields.job_title);
-  if (fields.note !== undefined) sets.push(`set note of p to ${q(fields.note)}`);
+  // Track array field updates
+  if (fields.phones !== undefined) { updated.push("phones"); }
+  if (fields.emails !== undefined) { updated.push("emails"); }
+  if (fields.addresses !== undefined) { updated.push("addresses"); }
+  if (fields.urls !== undefined) { updated.push("urls"); }
+  if (fields.phone !== undefined) { updated.push("phone"); }
+  if (fields.email !== undefined) { updated.push("email"); }
+  if (fields.birthday !== undefined) { updated.push("birthday"); }
+  if (fields.photo !== undefined) { updated.push("photo"); }
+
+  // null array fields → clear all
+  if (fields.phones === null) sets.push(`delete every phone of p`);
+  if (fields.emails === null) sets.push(`delete every email of p`);
+  if (fields.addresses === null) sets.push(`delete every address of p`);
+  if (fields.urls === null) sets.push(`delete every url of p`);
 
   appendChildBlocks(sets, "p", fields, /*isUpdate*/ true);
-  appendBirthdayBlock(sets, "p", fields.birthday);
+  if (fields.birthday === null) {
+    // Clear birthday — set to a far-future date then remove? AppleScript
+    // doesn't have a clean "clear birth date", so set to missing value.
+    sets.push(`try\n    set birth date of p to missing value\n  end try`);
+  } else {
+    appendBirthdayBlock(sets, "p", fields.birthday);
+  }
 
-  const photoSetup = await preparePhotoBlock("p", fields.photo);
+  const photoSetup = fields.photo === null
+    ? { script: `try\n    set image of p to missing value\n  end try`, cleanup: () => {} }
+    : await preparePhotoBlock("p", fields.photo);
 
   const script = `
 tell application "Contacts"
@@ -1027,7 +1065,7 @@ export async function batchCreateContacts(entries: BatchCreateEntry[]): Promise<
   const photoCleanups: (() => void)[] = [];
   const photoBlocks: PhotoBlock[] = [];
   for (const entry of entries) {
-    const pb = await preparePhotoBlock("newPerson", entry.photo);
+    const pb = await preparePhotoBlock("newPerson", entry.photo ?? undefined);
     photoBlocks.push(pb);
     photoCleanups.push(pb.cleanup);
   }
@@ -1064,7 +1102,7 @@ export async function batchCreateContacts(entries: BatchCreateEntry[]): Promise<
 
     const extras: string[] = [];
     appendChildBlocks(extras, "newPerson", entry, /*isUpdate*/ false);
-    appendBirthdayBlock(extras, "newPerson", entry.birthday);
+    appendBirthdayBlock(extras, "newPerson", entry.birthday ?? undefined);
 
     const photoScript = photoBlocks[i]!.script;
 
@@ -1163,7 +1201,7 @@ export async function batchUpdateContacts(
   const photoCleanups: (() => void)[] = [];
   const photoBlocks: PhotoBlock[] = [];
   for (const entry of entries) {
-    const pb = await preparePhotoBlock("p", entry.photo);
+    const pb = await preparePhotoBlock("p", entry.photo ?? undefined);
     photoBlocks.push(pb);
     photoCleanups.push(pb.cleanup);
   }
@@ -1183,40 +1221,68 @@ export async function batchUpdateContacts(
     }
     preValidationErrors.push(null);
 
-    // Check ALLOWED_GROUPS membership (will be done inside AppleScript for speed)
     const sets: string[] = [];
-    const setIfStr = (apProp: string, val?: string) => {
-      if (val !== undefined && val !== "") sets.push(`set ${apProp} of p to ${q(val)}`);
+    const updatedFields: string[] = [];
+
+    // Same null-clear semantics as single updateContact
+    const setStr = (fieldName: string, apProp: string, val?: string | null) => {
+      if (val === null) {
+        sets.push(`set ${apProp} of p to ""`);
+        updatedFields.push(fieldName);
+      } else if (val !== undefined && val !== "") {
+        sets.push(`set ${apProp} of p to ${q(val)}`);
+        updatedFields.push(fieldName);
+      }
+    };
+    const setStrTry = (fieldName: string, apProp: string, val?: string | null) => {
+      if (val === null) {
+        sets.push(`try\n        set ${apProp} of p to ""\n      end try`);
+        updatedFields.push(fieldName);
+      } else if (val !== undefined && val !== "") {
+        sets.push(`try\n        set ${apProp} of p to ${q(val)}\n      end try`);
+        updatedFields.push(fieldName);
+      }
     };
 
-    setIfStr("first name", entry.first_name);
-    setIfStr("last name", entry.last_name);
-    if (entry.prefix !== undefined) sets.push(`try
-        set title of p to ${q(entry.prefix)}
-      end try`);
-    if (entry.suffix !== undefined) sets.push(`try
-        set suffix of p to ${q(entry.suffix)}
-      end try`);
-    if (entry.nickname !== undefined) sets.push(`try
-        set nickname of p to ${q(entry.nickname)}
-      end try`);
-    setIfStr("organization", entry.organization);
-    if (entry.department !== undefined) sets.push(`try
-        set department of p to ${q(entry.department)}
-      end try`);
-    setIfStr("job title", entry.job_title);
-    if (entry.note !== undefined) sets.push(`set note of p to ${q(entry.note)}`);
+    setStr("first_name", "first name", entry.first_name);
+    setStr("last_name", "last name", entry.last_name);
+    setStrTry("prefix", "title", entry.prefix);
+    setStrTry("suffix", "suffix", entry.suffix);
+    setStrTry("nickname", "nickname", entry.nickname);
+    setStr("organization", "organization", entry.organization);
+    setStrTry("department", "department", entry.department);
+    setStr("job_title", "job title", entry.job_title);
+    if (entry.note === null) {
+      sets.push(`set note of p to ""`);
+      updatedFields.push("note");
+    } else if (entry.note !== undefined) {
+      sets.push(`set note of p to ${q(entry.note)}`);
+      updatedFields.push("note");
+    }
+
+    // Nullable array fields
+    if (entry.phones !== undefined) updatedFields.push("phones");
+    if (entry.emails !== undefined) updatedFields.push("emails");
+    if (entry.addresses !== undefined) updatedFields.push("addresses");
+    if (entry.urls !== undefined) updatedFields.push("urls");
+    if (entry.birthday !== undefined) updatedFields.push("birthday");
+    if (entry.photo !== undefined) updatedFields.push("photo");
+
+    if (entry.phones === null) sets.push(`delete every phone of p`);
+    if (entry.emails === null) sets.push(`delete every email of p`);
+    if (entry.addresses === null) sets.push(`delete every address of p`);
+    if (entry.urls === null) sets.push(`delete every url of p`);
 
     appendChildBlocks(sets, "p", entry, /*isUpdate*/ true);
-    appendBirthdayBlock(sets, "p", entry.birthday);
-
-    const photoScript = photoBlocks[i]!.script;
-
-    // Track updated fields for the response
-    const updatedFields: string[] = [];
-    for (const [k, v] of Object.entries(entry)) {
-      if (k !== "contact_id" && k !== "id" && v !== undefined) updatedFields.push(k);
+    if (entry.birthday === null) {
+      sets.push(`try\n        set birth date of p to missing value\n      end try`);
+    } else {
+      appendBirthdayBlock(sets, "p", entry.birthday ?? undefined);
     }
+
+    const photoScript = entry.photo === null
+      ? `try\n        set image of p to missing value\n      end try`
+      : photoBlocks[i]!.script;
     // Encode updated_fields as a comma-separated string inside the AS result
     const updatedStr = updatedFields.join(",");
 

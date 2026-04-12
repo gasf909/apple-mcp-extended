@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.6.0
+
+### Fixed
+
+- **`update_contact` / `batch_update_contacts`: `null` = explicit field
+  clear.** Setting a string field to `null` now sets it to empty in
+  Apple Contacts. Previously, both `null` and `""` were treated as
+  "no change", making it impossible to clear a field. New semantics:
+  - `undefined` → no change
+  - `""` → no change (back-compat)
+  - `null` → clear the field (set to empty)
+  - `"value"` → set to value
+  
+  Applies to: first_name, last_name, prefix, suffix, nickname,
+  organization, department, job_title, note, birthday, photo.
+  Array fields (phones/emails/addresses/urls): `null` = delete all.
+
+- **`updated_fields` response accuracy.** Now only includes fields
+  where an actual AppleScript `set` or `delete` was generated. `""`
+  (empty string = no-change) is excluded. `null` (clear) is included.
+
+### Added
+
+- **`output_file` parameter** on `list_contacts` and
+  `batch_get_contacts`. When set to an absolute file path, the full
+  response JSON is written to that file and only a compact summary is
+  returned in the MCP response. Eliminates dependency on client-side
+  token limits for large responses.
+  - `list_contacts` summary: `{saved_to, total, items_count, offset,
+    limit, next_offset}`
+  - `batch_get_contacts` summary: `{saved_to, total, succeeded, failed}`
+  - Relative paths are rejected. Parent dirs are auto-created.
+
 ## 0.5.1
 
 ### Fixed

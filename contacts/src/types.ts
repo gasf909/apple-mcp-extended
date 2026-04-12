@@ -64,23 +64,29 @@ export const AddressSchema = z.object({
   formatted: z.string().optional().describe("Single freeform string; used as street if street/etc not provided"),
 });
 
-// Full contact field set used by create_contact / update_contact
+// Full contact field set used by create_contact / update_contact.
+//
+// Nullable semantics (since 0.6.0):
+//   undefined → field is not touched (no change on update)
+//   null      → explicitly clear the field (set to empty in Apple Contacts)
+//   ""        → same as undefined (no change) — back-compat
+//   "value"   → set to that value
 export const ContactFieldsSchema = z.object({
-  first_name: z.string().optional(),
-  last_name: z.string().optional(),
-  prefix: z.string().optional(),
-  suffix: z.string().optional(),
-  nickname: z.string().optional(),
-  organization: z.string().optional(),
-  department: z.string().optional(),
-  job_title: z.string().optional(),
-  phones: jsonOrArray(PhoneSchema).optional().describe("Replaces all existing phones when provided. Accepts array or JSON-stringified array."),
-  emails: jsonOrArray(EmailSchema).optional().describe("Replaces all existing emails when provided. Accepts array or JSON-stringified array."),
-  addresses: jsonOrArray(AddressSchema).optional().describe("Replaces all existing addresses when provided. Accepts array or JSON-stringified array."),
-  urls: jsonOrArray(UrlSchema).optional().describe("Replaces all existing urls when provided. Accepts array or JSON-stringified array."),
-  birthday: z.string().optional().describe("ISO date YYYY-MM-DD or MM-DD"),
-  photo: z.string().optional().describe("Base64-encoded image, or absolute file path starting with /"),
-  note: z.string().optional().describe("Free-form notes; newlines are preserved"),
+  first_name: z.string().nullable().optional(),
+  last_name: z.string().nullable().optional(),
+  prefix: z.string().nullable().optional(),
+  suffix: z.string().nullable().optional(),
+  nickname: z.string().nullable().optional(),
+  organization: z.string().nullable().optional(),
+  department: z.string().nullable().optional(),
+  job_title: z.string().nullable().optional(),
+  phones: jsonOrArray(PhoneSchema).nullable().optional().describe("Replaces all existing phones when provided. null = clear all. Accepts array or JSON-stringified array."),
+  emails: jsonOrArray(EmailSchema).nullable().optional().describe("Replaces all existing emails when provided. null = clear all. Accepts array or JSON-stringified array."),
+  addresses: jsonOrArray(AddressSchema).nullable().optional().describe("Replaces all existing addresses when provided. null = clear all. Accepts array or JSON-stringified array."),
+  urls: jsonOrArray(UrlSchema).nullable().optional().describe("Replaces all existing urls when provided. null = clear all. Accepts array or JSON-stringified array."),
+  birthday: z.string().nullable().optional().describe("ISO date YYYY-MM-DD or MM-DD. null = clear."),
+  photo: z.string().nullable().optional().describe("Base64-encoded image, or absolute file path starting with /. null = clear."),
+  note: z.string().nullable().optional().describe("Free-form notes; newlines are preserved. null = clear."),
 
   // ---- Deprecated single-value back-compat fields ----
   email: z.string().optional().describe("DEPRECATED: append a single email (use emails[] instead)"),
